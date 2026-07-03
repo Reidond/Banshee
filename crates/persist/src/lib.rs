@@ -1,0 +1,1 @@
+//! Session restore, window placement.
