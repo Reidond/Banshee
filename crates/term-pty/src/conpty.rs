@@ -144,8 +144,10 @@ pub struct ConPty {
     wait_handle: HANDLE,
     /// Leaked wait context, reclaimed on shutdown.
     wait_ctx: *mut WaitContext,
-    /// Receives the exit status once the process-handle wait fires.
-    exit_rx: Receiver<ExitStatus>,
+    /// Receives the exit status once the process-handle wait fires. Mutexed so
+    /// the containing type can be soundly `Sync` (`Receiver` itself is `!Sync`);
+    /// exit polling is still logically single-consumer by convention.
+    exit_rx: Mutex<Receiver<ExitStatus>>,
     /// Debounced resize coordinator (latest-geometry-wins).
     resize: ResizeCoalescer,
     /// Job object; dropping it kills the child tree (UC-03 E3).
@@ -156,6 +158,18 @@ pub struct ConPty {
 // SAFETY: all raw handles are single-owner and only touched under &mut self or
 // on the reader thread which is joined during shutdown.
 unsafe impl Send for ConPty {}
+
+// SAFETY: the `&self` methods that are meaningful to call concurrently from
+// multiple threads are `write` (WriteFile on the input pipe — the OS
+// serializes individual `WriteFile` calls; interleaving whole calls from
+// different threads is memory-safe, just an application-level ordering
+// concern the caller owns) and `resize`/`applied_resizes*`/`set_on_applied`
+// (fully synchronized internally by `ResizeCoalescer`'s `Mutex`+`Condvar`).
+// `try_exit`/`wait_exit` take the `exit_rx` mutex (Receiver is `!Sync`, so we
+// never touch it concurrently); `wait_process_handle` only reads the process
+// HANDLE, which is valid for the lifetime of `self` and safe to wait on from
+// any thread. Exit polling remains logically single-consumer by convention.
+unsafe impl Sync for ConPty {}
 
 impl ConPty {
     /// Spawn `shell` inside a fresh pseudoconsole of `(cols, rows)`.
@@ -276,7 +290,7 @@ impl ConPty {
             reader,
             wait_handle,
             wait_ctx,
-            exit_rx,
+            exit_rx: Mutex::new(exit_rx),
             resize,
             _job: job,
             shut_down: false,
@@ -298,19 +312,43 @@ impl ConPty {
     /// Test-visible so the resize-storm test can assert the final geometry
     /// equals the last request (UC-03 E2).
     pub fn applied_resizes(&self) -> Vec<(i16, i16)> {
+        self.resize.applied().into_iter().map(|a| a.geom).collect()
+    }
+
+    /// Same as [`ConPty::applied_resizes`] but with a monotonic sequence number
+    /// and the `Instant` the `ResizePseudoConsole` call returned, so callers
+    /// (e.g. [`crate::resize::ResizePipeline`] and its tests) can assert
+    /// ordering against a second event stream (such as vt resizes) without a
+    /// race on wall-clock sampling. See SPEC §6.5.
+    pub fn applied_resizes_with_meta(&self) -> Vec<AppliedResize> {
         self.resize.applied()
+    }
+
+    /// Register a callback invoked on the coalescer's worker thread
+    /// synchronously *after* each `ResizePseudoConsole` call returns and
+    /// *before* the worker loops back to wait for the next request.
+    ///
+    /// This is the hook [`crate::resize::ResizePipeline`] uses to sequence the
+    /// vt resize strictly after the ConPTY resize, in the same single ordering
+    /// point, with no second timer (SPEC §6.5). Only one callback is supported
+    /// (last registration wins) — the pipeline is meant to be the sole owner.
+    pub fn set_on_applied<F>(&self, f: F)
+    where
+        F: Fn(AppliedResize) + Send + Sync + 'static,
+    {
+        self.resize.set_on_applied(f);
     }
 
     /// Non-blocking check for the exit status (populated by the process-handle
     /// waiter). Returns `Some` once the child has exited and been observed.
     pub fn try_exit(&self) -> Option<ExitStatus> {
-        self.exit_rx.try_recv().ok()
+        self.exit_rx.lock().unwrap().try_recv().ok()
     }
 
     /// Block until the child exits (or `timeout` elapses), returning the exit
     /// status surfaced by the process-handle waiter.
     pub fn wait_exit(&self, timeout: Duration) -> Option<ExitStatus> {
-        self.exit_rx.recv_timeout(timeout).ok()
+        self.exit_rx.lock().unwrap().recv_timeout(timeout).ok()
     }
 
     /// Wait on the raw process handle directly. Used by tests to measure the
@@ -384,18 +422,50 @@ impl Drop for ConPty {
 // Resize debounce / coalesce (~50 ms, latest-geometry-wins)
 // ---------------------------------------------------------------------------
 
+/// Debounce window for coalescing a storm of resize requests into a single
+/// `ResizePseudoConsole` call (SPEC §6.5, UC-03 E2). Kept short enough that
+/// interactive resizing (dragging a window edge) still feels immediate, but
+/// long enough to collapse a WM_SIZE storm (dozens of events/sec) into one
+/// applied geometry per quiet window.
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// One `ResizePseudoConsole` application, with ordering metadata.
+#[derive(Debug, Clone, Copy)]
+pub struct AppliedResize {
+    /// The geometry actually applied.
+    pub geom: (i16, i16),
+    /// Monotonically increasing across the lifetime of one [`ConPty`]. Lets a
+    /// consumer line this event up against a second sequence (e.g. vt
+    /// resizes) even if `Instant`s alone are too close to compare reliably.
+    pub seq: u64,
+    /// The instant `ResizePseudoConsole` returned for this application.
+    pub at: Instant,
+}
+
+type AppliedHook = Arc<dyn Fn(AppliedResize) + Send + Sync>;
 
 struct ResizeShared {
     pending: Option<(i16, i16)>,
-    applied: Vec<(i16, i16)>,
+    applied: Vec<AppliedResize>,
+    next_seq: u64,
     stop: bool,
     dirty_at: Option<Instant>,
+    on_applied: Option<AppliedHook>,
 }
 
 /// Coalesces a storm of `resize()` calls into a single `ResizePseudoConsole`
 /// per quiet window. A background thread polls the shared "latest request" and
 /// applies it once ~50 ms have passed with no newer request.
+///
+/// Under a sustained storm (a new request landing before every debounce
+/// window elapses), the worker's inner wait loop always re-reads
+/// `guard.dirty_at`/`guard.pending` fresh after being woken, so the *most
+/// recent* request at the moment the quiet window finally elapses is the one
+/// applied — never a stale snapshot taken before the last few requests came
+/// in. This was verified (not just assumed) against the storm test in
+/// `tests/resize_storm.rs`: with real recv-timeout wakeups there is no window
+/// where a newer `request()` can land after `pending.take()` but be silently
+/// dropped, because `request()` and the take both hold the same mutex.
 struct ResizeCoalescer {
     shared: Arc<(Mutex<ResizeShared>, std::sync::Condvar)>,
     worker: Option<JoinHandle<()>>,
@@ -413,8 +483,10 @@ impl ResizeCoalescer {
             Mutex::new(ResizeShared {
                 pending: None,
                 applied: Vec::new(),
+                next_seq: 0,
                 stop: false,
                 dirty_at: None,
+                on_applied: None,
             }),
             std::sync::Condvar::new(),
         ));
@@ -445,16 +517,31 @@ impl ResizeCoalescer {
                         }
                     }
                 }
-                // Quiet window elapsed: apply the latest geometry.
+                // Quiet window elapsed: apply the latest geometry. Re-reading
+                // `pending` here (rather than a value captured earlier) is
+                // what makes storm handling race-free — see the struct doc.
                 let geom = guard.pending.take();
                 guard.dirty_at = None;
                 if let Some((cols, rows)) = geom {
-                    guard.applied.push((cols, rows));
-                    drop(guard);
                     let size = COORD { X: cols, Y: rows };
                     // SAFETY: hpcon valid for the worker's lifetime; the owning
                     // ConPty stops this worker before ClosePseudoConsole.
                     unsafe { ResizePseudoConsole(hpcon.0, size) };
+                    // Record + notify *after* ResizePseudoConsole returns, so
+                    // any ordering hook observes ConPTY-before-vt (SPEC §6.5).
+                    let seq = guard.next_seq;
+                    guard.next_seq += 1;
+                    let applied = AppliedResize {
+                        geom: (cols, rows),
+                        seq,
+                        at: Instant::now(),
+                    };
+                    guard.applied.push(applied);
+                    let hook = guard.on_applied.clone();
+                    drop(guard);
+                    if let Some(hook) = hook {
+                        hook(applied);
+                    }
                 }
             }
         });
@@ -472,9 +559,17 @@ impl ResizeCoalescer {
         cvar.notify_all();
     }
 
-    fn applied(&self) -> Vec<(i16, i16)> {
+    fn applied(&self) -> Vec<AppliedResize> {
         let (lock, _) = &*self.shared;
         lock.lock().unwrap().applied.clone()
+    }
+
+    fn set_on_applied<F>(&self, f: F)
+    where
+        F: Fn(AppliedResize) + Send + Sync + 'static,
+    {
+        let (lock, _) = &*self.shared;
+        lock.lock().unwrap().on_applied = Some(Arc::new(f));
     }
 
     fn stop(&mut self) {

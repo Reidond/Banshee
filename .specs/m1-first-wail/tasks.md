@@ -87,10 +87,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Task 1
 - **Files to modify**: `crates/term-pty/src/conpty.rs`, `crates/app-shell/src/` (resize events)
 - **Acceptance criteria**:
-  - [ ] Debounce → `ResizePseudoConsole` → vt resize ordering enforced in one place
-  - [ ] Resize storm (M0 UC-03 E2 case) green with rendering attached; no state corruption in goldens after storm
+  - [x] Debounce → `ResizePseudoConsole` → vt resize ordering enforced in one place (`term_pty::ResizePipeline`; vt resize runs on the coalescer thread immediately after ResizePseudoConsole — ordered by construction)
+  - [x] Resize storm green: 200 bursty requests → coalesced to final geometry, vt grid matches, post-storm echo round-trips (state intact). "With rendering attached" re-checked at Phase 1 exit integration.
 - **Test requirements**: automated storm test with grid assertion after settle
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 5: Keyboard encoder — full legacy + Kitty matrix
 
@@ -211,3 +211,5 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 | T1 | **Q2 decided: variant A (brief read-lock, `std::sync::Mutex`).** Flood bench (debug build, orchestrator-verified run): consumer lock+update p50 0.020 ms / p99 0.306 ms / max 2.01 ms; writer stall p99 0.017 ms — vs 8 ms budget. | Data-driven per design procedure; ~26× headroom, no reason to build variant B. Contract isolated in `SharedTerminal::with_render_update` so B stays drop-in. |
 | T1 | Render-state cell API exposes hyperlink *presence* only, not URI (C API has no URI accessor on the render-state path). | Matches Gap Log `partial`; URI keying stays on the grid-ref path until upstream adds ids. Non-breaking to add later. |
 | T1 | Consumer-side wiring in term-render deferred to T2/integration; T1 scoped to term-core to keep Wave 1a writers disjoint. | Orchestration file-partitioning; the exposed contract is exactly what term-render will call. |
+| T4 | `ConPty` gained `unsafe impl Sync` (needed for `Arc<ConPty>` in ResizePipeline). Orchestrator hardened it: `exit_rx` wrapped in `Mutex` so the impl doesn't rely on `mpsc::Receiver` internals beyond its `!Sync` contract. | Soundness: std does not promise concurrent `try_recv` via `&Receiver` is safe; mutex makes the claim locally provable. |
+| T4 | No latest-wins race found in the M0 coalescer (storm-verified); debounce kept at 50 ms, now documented against SPEC §6.5. | Investigated per brief; documented in struct docs to avoid re-litigating. |

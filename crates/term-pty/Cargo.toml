@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+term-core = { path = "../term-core" }
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61"

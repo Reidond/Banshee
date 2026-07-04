@@ -14,4 +14,10 @@ pub mod conpty;
 pub mod procwalk;
 
 #[cfg(windows)]
-pub use conpty::{ConPty, ExitStatus, Shell};
+pub mod resize;
+
+#[cfg(windows)]
+pub use conpty::{AppliedResize, ConPty, ExitStatus, Shell};
+
+#[cfg(windows)]
+pub use resize::ResizePipeline;
