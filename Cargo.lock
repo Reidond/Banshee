@@ -172,6 +172,7 @@ name = "layout"
 version = "0.1.0"
 dependencies = [
  "config",
+ "term-pty",
 ]
 
 [[package]]
@@ -401,6 +402,7 @@ version = "0.1.0"
 name = "term-pty"
 version = "0.1.0"
 dependencies = [
+ "config",
  "term-core",
  "term-input",
  "windows-sys 0.61.2",

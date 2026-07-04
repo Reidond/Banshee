@@ -19,6 +19,8 @@ pub mod resize;
 #[cfg(windows)]
 pub mod paste_write;
 
+pub mod wsl;
+
 #[cfg(windows)]
 pub use conpty::{AppliedResize, ConPty, ExitStatus, Shell};
 

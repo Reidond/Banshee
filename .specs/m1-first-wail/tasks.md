@@ -155,11 +155,11 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Task 9
 - **Files to modify**: `crates/term-pty/src/wsl.rs`, `crates/layout/src/profile.rs` (auto-gen)
 - **Acceptance criteria**:
-  - [ ] Registry enumeration with `--list --verbose` UTF-16LE fallback; default-distro marked; one auto-profile per distro
-  - [ ] Launch via `wsl.exe -d <Distro> --cd <path>`; OSC 7 cwd captured on the session
-  - [ ] Death message distinguishes distro-terminated vs service-down (`wsl.exe --status`), with restart action (UC-01 E2)
-- **Test requirements**: table-driven discovery tests (mocked registry/CLI output incl. UTF-16LE); live WSL tests behind CI tag
-- **Status**: [ ] Not started
+  - [x] Registry enumeration with `--list --verbose` UTF-16LE fallback; default-distro marked; one auto-profile per ready distro (`ProfileSet::resolve_with_wsl`); silent degrade when WSL absent
+  - [x] Launch composition via `-d <Distro>` + `--cd` (in `launch_spec`, T9); OSC 7 cwd capture rides T11 session objects
+  - [x] Health: `wsl_health()`/`classify_death()` — `--status` output proved locale-prose (live-verified), so classification is conservative: wsl.exe unreachable → ServiceDown, distro-list membership → DistroTerminated, else Unknown. Restart action surfacing rides T11 death messages.
+- **Test requirements**: table-driven discovery tests (mocked registry/CLI output incl. UTF-16LE); live WSL test behind `#[ignore]` — 15 + live green (registry matched CLI exactly on dev machine; registry State=1 means installed, not running)
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 11: Session lifecycle hardening (UC-01 complete)
 

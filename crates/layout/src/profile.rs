@@ -170,6 +170,22 @@ impl ProfileSet {
         ProfileSet { profiles }
     }
 
+    /// Convenience wrapper around [`Self::resolve`] that auto-discovers WSL
+    /// distros (`term_pty::wsl::discover_distros`) and passes their
+    /// auto-generated profiles (`term_pty::wsl::wsl_profiles`) as
+    /// `extra_sources` (M1 Task 10, UC-01 A1).
+    ///
+    /// Discovery failure or zero distros degrades silently to a
+    /// Windows-only profile set — `discover_distros` never errors (it
+    /// swallows registry/CLI failures internally and returns an empty
+    /// `Vec`), so there is no error path to surface here; this wrapper
+    /// exists purely to keep that call out of every caller's way.
+    pub fn resolve_with_wsl(config: &Config) -> ProfileSet {
+        let distros = term_pty::wsl::discover_distros();
+        let extra = term_pty::wsl::wsl_profiles(&distros);
+        Self::resolve(config, &extra)
+    }
+
     /// All resolved profiles, in stable order (built-ins first, then extra
     /// sources, then pure-user profiles; overridden entries keep their
     /// original position).
@@ -455,6 +471,37 @@ mod tests {
 
         assert_eq!(spec.args, vec!["-d".to_string(), "Ubuntu".to_string()]);
         assert_eq!(spec.cwd, None);
+    }
+
+    #[test]
+    fn resolve_with_wsl_shaped_api_degrades_cleanly_when_discovery_empty() {
+        // Mirrors what `resolve_with_wsl` does internally, but with an
+        // explicitly empty discovery result (standing in for "registry
+        // empty + CLI fallback empty" on a WSL-less machine) so the test
+        // doesn't depend on this machine's actual WSL state. Zero distros
+        // must fall back to exactly the Windows-only builtin set, with no
+        // panics and no extra profiles — UC-01 A1's "no error noise".
+        let config = Config::default();
+        let empty_distros: Vec<term_pty::wsl::Distro> = Vec::new();
+        let extra = term_pty::wsl::wsl_profiles(&empty_distros);
+        assert!(extra.is_empty());
+
+        let set = ProfileSet::resolve(&config, &extra);
+        let names: Vec<&str> = set.profiles().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["pwsh", "Windows PowerShell", "cmd"]);
+    }
+
+    #[test]
+    fn resolve_with_wsl_runs_without_error_noise_on_this_machine() {
+        // Smoke test: `resolve_with_wsl` must never panic regardless of
+        // this machine's actual WSL state, and must always include the
+        // Windows builtins.
+        let config = Config::default();
+        let set = ProfileSet::resolve_with_wsl(&config);
+        let names: Vec<&str> = set.profiles().iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"pwsh"));
+        assert!(names.contains(&"Windows PowerShell"));
+        assert!(names.contains(&"cmd"));
     }
 
     #[test]
