@@ -10,7 +10,7 @@
 
 | Gate | Target | Measured | Verdict |
 |---|---|---|---|
-| Keypress → present | ≤ 15 ms p99 @ 120 Hz | loop-side avg 0.52 ms / p95 0.52 ms (echo-selftest, release). **PresentMon end-to-end correlation still required** | PASS loop-side; final call needs PresentMon (operator) |
+| Keypress → present | ≤ 15 ms p99 @ 120 Hz | loop-side avg 0.52 ms / p95 0.52 ms (echo-selftest, release). PresentMon (elevated, real typing, 26 presents): MsInPresentAPI p99 0.39 ms, render→present-latency p99 0.45 ms, GPU 0.27 ms — app-side pipeline is sub-ms end to end. **Photon attribution NA: `PresentMode = Composed: Flip`** (XAML/SwapChainPanel composition) — DWM owns the final flip, PresentMon can't attribute screen time to our swapchain. Compositor adds ~1–2 vsyncs inherently (6.3–12.6 ms @ 160 Hz; 8.3–16.7 ms @ the SPEC's 120 Hz). | App-side PASS with huge margin; **end-to-end estimate ≈ 7–13 ms @ 160 Hz (within gate), marginal at 120 Hz worst-case** — the compositor hop, not our code, is the budget item. See open question below. |
 | UI-thread stall under flood | < 8 ms | consumer lock+update p99 **0.122 ms**, max 3.42 ms (release `flood_sync`, saturating 10 s flood) | **PASS** (65× headroom) |
 | vtebench vs winghostty | ≤ 1.5× wall-time | vtebench/winghostty **not installed** on this machine | OPERATOR item |
 | Cold start → interactive prompt | ≤ 500 ms | 1.26–1.34 s wall to visible bare-pwsh prompt, **but instrumentation granularity is ~1 s** (grid-dump cadence); true value in 0.3–1.3 s | **INCONCLUSIVE — needs finer instrumentation** (add a first-prompt-present probe timestamp; then PresentMon run) |
@@ -40,11 +40,19 @@ waitable only re-signals after a `Present` — so the first damage-skipped
 for the full 1000 ms timeout: the whole app ran at ~1 fps whenever the screen
 was static. Fix: gate the wait on `presented_last_frame`. Evidence:
 inject→echo-visible went 1015 ms → **44 ms**; loop cadence restored.
-**Follow-up D-M1-2 (open):** after the fix, ~150 presents/s were observed
-against a mostly static prompt — damage-skip may be ineffective in the live
-loop (every tick's fresh snapshot may look dirty). Latency is unaffected;
-this is a power/perf-headroom question. Verify with a truly idle `-NoProfile`
-prompt and, if confirmed, tighten the renderer's damage comparison.
+**Follow-up D-M1-2 (partially resolved):** the PresentMon typing capture shows
+presents tracking keystrokes exactly (26 presents in 3 s of typing, with
+100–900 ms gaps during pauses) — damage-skip works under real interactive use.
+The earlier ~150 presents/s was during continuous shell output, which is
+legitimately dirty every frame. Remaining check: confirm a fully idle prompt
+(cursor blink off) drops to ~0 presents/s.
+
+**New architectural note (M2/M4 input):** presentation is `Composed: Flip` —
+the SwapChainPanel route composes through DWM, costing ~1–2 vsyncs of
+un-attributable latency and making true photon measurement impossible from
+the app's swapchain. Getting independent flip would need
+DXGI_SWAP_CHAIN_FLAG-level changes or a different hosting surface; park as an
+open question for the M4 perf pass (SPEC §10's 120 Hz worst case is marginal).
 
 ## Release-only defect found & fixed during the gate run
 `INPUT_TX.set()` lived inside a `debug_assert!` → release builds never installed
