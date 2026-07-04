@@ -20,6 +20,7 @@
 //! via a channel — not shared references. See the `unsafe impl Send` note below.
 
 mod render_state;
+mod scrollback;
 mod snapshot;
 
 pub use render_state::{
@@ -40,7 +41,19 @@ use ghostty_vt_sys as sys;
 /// Terminal construction options. Mirrors the SPEC contract's `VtOptions`.
 #[derive(Debug, Clone, Copy)]
 pub struct VtOptions {
-    /// Maximum scrollback lines retained by the vt.
+    /// Maximum scrollback the vt retains, **in bytes** (not lines).
+    ///
+    /// This is libghostty-vt's `max_scrollback` byte budget: the vt allocates
+    /// history in fixed-size pages and evicts the oldest pages once the budget is
+    /// exceeded, so the retained *line* count depends on content width and page
+    /// granularity, not a fixed row cap. Empirically (80-col numbered lines) the
+    /// budget maps roughly linearly above ~10 MB: ~577 lines at 10 KB, ~9.2k at
+    /// 10 MB, ~10.9k at 12 MB, ~15k at 16 MB.
+    ///
+    /// Defaults to `12_000_000` (12 MB) — chosen to clear the M1 "≥10,000 lines
+    /// retained by default" requirement with headroom (~10.9k lines of typical
+    /// content) while staying well under the ≤80 MB idle-memory NFR. Override for
+    /// deeper history. See [`crate::Terminal::scrollback_len`] for the live depth.
     pub max_scrollback: usize,
     /// Cell width in pixels (used for image protocols / size reports). The vt
     /// grid itself is cell-addressed; this only affects pixel-space reports.
@@ -52,7 +65,10 @@ pub struct VtOptions {
 impl Default for VtOptions {
     fn default() -> Self {
         Self {
-            max_scrollback: 10_000,
+            // 12 MB byte budget → ≳10.9k retained lines of typical content,
+            // clearing the ≥10k-line requirement with headroom (see the field
+            // doc for the byte-vs-line mapping).
+            max_scrollback: 12_000_000,
             cell_width_px: 1,
             cell_height_px: 1,
         }

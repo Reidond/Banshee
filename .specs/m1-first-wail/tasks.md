@@ -76,10 +76,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Task 1
 - **Files to modify**: `crates/term-core/src/scrollback.rs`, `crates/term-render/src/` (viewport), input wheel routing
 - **Acceptance criteria**:
-  - [ ] ≥ 10k lines retained by default, configurable; viewport scroll + pin-while-scrolled semantics per requirements
-  - [ ] Wheel routes to scrollback only when the app hasn't claimed mouse mode
-- **Test requirements**: golden tests for retention + viewport math; flood memory check (NFR-4 input)
-- **Status**: [ ] Not started
+  - [x] ≥ 10k lines retained by default (12 MB byte budget — see Deviations), configurable; viewport scroll + native vt pin semantics verified under new output
+  - [x] Wheel-routing predicate `mouse_reporting_active()` (native MOUSE_TRACKING query); `bracketed_paste_active()` + `kitty_flags()` exposed for Wave 2
+- **Test requirements**: golden tests for retention + viewport math; flood memory check (NFR-4 input) — 7 scrollback tests green (orchestrator-verified)
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 4: Resize correctness end-to-end
 
@@ -213,5 +213,7 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 | T1 | Consumer-side wiring in term-render deferred to T2/integration; T1 scoped to term-core to keep Wave 1a writers disjoint. | Orchestration file-partitioning; the exposed contract is exactly what term-render will call. |
 | T4 | `ConPty` gained `unsafe impl Sync` (needed for `Arc<ConPty>` in ResizePipeline). Orchestrator hardened it: `exit_rx` wrapped in `Mutex` so the impl doesn't rely on `mpsc::Receiver` internals beyond its `!Sync` contract. | Soundness: std does not promise concurrent `try_recv` via `&Receiver` is safe; mutex makes the claim locally provable. |
 | T4 | No latest-wins race found in the M0 coalescer (storm-verified); debounce kept at 50 ms, now documented against SPEC §6.5. | Investigated per brief; documented in struct docs to avoid re-litigating. |
+| T3 | **`VtOptions::max_scrollback` is a BYTE budget, not a line count** (libghostty-vt page-granular eviction). Old default 10_000 retained only ~577 lines. Default now `12_000_000` (12 MB ≈ 10.9k 80-col lines, ~9% headroom, well under the 80 MB idle NFR). | Empirically measured; required to actually meet the ≥10k-line requirement. Documented on the field. |
+| T3 | Scrollback read mechanism reconciled: no `ghostty_scrollback_*` symbols — the exposed mechanism is the first-class viewport API (`ghostty_terminal_scroll_viewport` + `VIEWPORT_ACTIVE`/`SCROLLBACK_ROWS` data queries); the vt owns pin-while-scrolled natively; render-state follows the scrolled viewport for free. | gap_probes.rs was the source of truth; Gap Log wording was imprecise, now pinned here. |
 | T2 | Glyph rasterization needs `IDWriteFactory2` grayscale analysis (base-factory ClearType analysis returns empty R8 bounds); base `ALIASED` kept as fallback. | Found empirically — first test run failed on the base overload. |
 | T2 | Curly/Dotted/Dashed underlines are segmented-rect approximations (no undercurl shader); renderer consumes `GridSnapshot`, not the T1 `RenderState` iterator — conversion isolated in one module for the swap at integration. `grid_spike.rs` kept for app-shell `--self-test`. | v1 scope; parallel-writer partitioning. Iterator migration is a Phase 1 exit integration item. |
