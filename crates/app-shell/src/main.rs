@@ -727,6 +727,13 @@ struct TermSession {
     /// Set once the child's exit has been surfaced into the pane (death screen).
     death_surfaced: bool,
     started: Instant,
+    /// E2E Task 13: dev-only debug grid dump. Set from `BANSHEE_DEBUG_DUMP_GRID`
+    /// at spawn time; when present, the visible grid text is written to this path
+    /// roughly once a second so an external test process can poll for content
+    /// without a UIA dependency. `None` in the common case (env var unset).
+    debug_dump_path: Option<std::path::PathBuf>,
+    /// Wall-clock instant of the last debug grid dump (throttles to ~1/s).
+    last_debug_dump: Instant,
 }
 
 impl TermSession {
@@ -805,6 +812,8 @@ impl TermSession {
             echo_seen_at: None,
             death_surfaced: false,
             started: Instant::now(),
+            debug_dump_path: std::env::var_os("BANSHEE_DEBUG_DUMP_GRID").map(Into::into),
+            last_debug_dump: Instant::now() - Duration::from_secs(1),
         })
     }
 
@@ -875,6 +884,18 @@ impl TermSession {
         // now; the iterator migration replaces this at the next perf pass.
         self.term.with_locked(|t| t.snapshot(&mut self.snap));
         self.fed_this_tick = true;
+
+        // E2E Task 13: dev-only debug grid dump, throttled to ~1/s so the test
+        // harness can poll a file instead of driving UIA. Env-gated (unset in
+        // normal interactive/self-test runs; near-zero cost when unset).
+        if let Some(path) = &self.debug_dump_path {
+            if self.last_debug_dump.elapsed() >= Duration::from_secs(1) {
+                self.last_debug_dump = Instant::now();
+                if let Err(e) = std::fs::write(path, self.grid_text()) {
+                    probe("E2E", &format!("BANSHEE_DEBUG_DUMP_GRID write failed: {e}"));
+                }
+            }
+        }
 
         if mode() == Mode::EchoSelfTest && self.injected && self.echo_seen_at.is_none() {
             self.scan_for_echo();
@@ -984,6 +1005,25 @@ impl TermSession {
         let enter = enc.encode(&KeyEvent::new(Key::Enter, Modifiers::NONE));
         let _ = tx.send((enter, Instant::now()));
         probe("E2E", "injected 'echo m1-wail' + Enter via term-input encoder");
+    }
+
+    /// Render the current grid snapshot to plain text, one line per row
+    /// (spacer-tail cells dropped, trailing NULs kept as-is — the caller trims).
+    /// Shared by the echo self-test scan and the `BANSHEE_DEBUG_DUMP_GRID` dump
+    /// (Task 13) so both read the identical row/cell projection.
+    fn grid_text(&self) -> String {
+        let mut out = String::new();
+        for row in &self.snap.rows_data {
+            let text: String = row
+                .cells
+                .iter()
+                .filter(|c| !matches!(c.width, CellWidth::SpacerTail))
+                .map(|c| char::from_u32(c.codepoint).unwrap_or(' '))
+                .collect();
+            out.push_str(text.trim_end_matches('\0'));
+            out.push('\n');
+        }
+        out
     }
 
     /// Look for the echoed marker anywhere in the active grid snapshot.

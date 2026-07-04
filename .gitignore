@@ -18,3 +18,6 @@ $RECYCLE.BIN/
 
 # Note: vendor/ is intentionally NOT ignored — vendored libghostty-vt
 # artifacts are checked in (see xtask vendor-vt).
+
+# Soak harness output (scripts/soak.ps1, Task 13) — local run artifacts only.
+/soak-results/

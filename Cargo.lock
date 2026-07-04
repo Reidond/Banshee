@@ -24,6 +24,7 @@ dependencies = [
  "windows-core",
  "windows-reactor",
  "windows-reactor-setup",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

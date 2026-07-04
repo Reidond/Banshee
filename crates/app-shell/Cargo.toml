@@ -70,3 +70,13 @@ term-render = { path = "../term-render" }
 [build-dependencies.windows-reactor-setup]
 git = "https://github.com/microsoft/windows-rs"
 rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f"
+
+# Task 13 E2E smoke test (tests/e2e_smoke.rs): Mode 2 (UIA/Win32-driven, #[ignore]d)
+# finds the app's top-level HWND and posts synthetic WM_CHAR/WM_CLOSE. This is the
+# registry `windows-sys` (not the git-pinned `windows`/`windows-reactor` rev above):
+# the test process is a separate binary from app-shell and doesn't need to unify
+# D3D/reactor interface types, so the plain crates.io crate is simplest here —
+# same pattern term-pty/Cargo.toml uses for its own dev-only Win32 test needs.
+[target.'cfg(windows)'.dev-dependencies.windows-sys]
+version = "0.61"
+features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"]
