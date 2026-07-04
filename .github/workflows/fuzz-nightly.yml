@@ -29,11 +29,24 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
 
-      # windows-latest ships Visual Studio with the ASan runtime DLL
-      # (clang_rt.asan_dynamic-x86_64.dll) already on PATH via the VC tools
-      # dir, and cargo-fuzz's ASan-instrumented binary needs it at *run* time.
-      # See crates/term-core/fuzz/README.md for the local-dev equivalent of
-      # this step, in case a runner image ever stops providing it.
+      # cargo-fuzz's ASan-instrumented binary needs the ASan runtime DLL
+      # (clang_rt.asan_dynamic-x86_64.dll) at RUN time. It ships with the MSVC
+      # toolset but its bin dir is NOT on PATH on windows-latest (verified:
+      # first dispatch died with STATUS_DLL_NOT_FOUND) — prepend it explicitly.
+      # Same recipe as the local-dev note in crates/term-core/fuzz/README.md.
+      - name: Put MSVC ASan runtime DLL on PATH
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -property installationPath
+          $bin = Get-Item "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64" |
+            Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+          if (-not (Test-Path "$bin\clang_rt.asan_dynamic-x86_64.dll")) {
+            Write-Error "ASan runtime DLL not found under $bin"; exit 1
+          }
+          Add-Content $env:GITHUB_PATH $bin
+          Write-Host "Prepended to PATH: $bin"
+
       - name: Run feed fuzz target (1 CPU-hour)
         shell: pwsh
         working-directory: crates/term-core

@@ -7,7 +7,7 @@ Commit date      : 2026-07-03
 Source tarball   : https://codeload.github.com/ghostty-org/ghostty/tar.gz/d560c645488d158c3e554e13025c0eaad68d1f43
 Source sha256    : 95f6df167c3c02be2a0db8e6b88f83f581bb073a53f533a26f41941e7adef397
 Built with Zig   : 0.15.2
-Build target(s)  : x86_64-windows-msvc (static vt lib)
+Build target(s)  : x86_64-windows-msvc, aarch64-windows-msvc (static vt lib)
 
 License          : MIT (matches Ghostty & the libghostty ecosystem).
 Attribution      : Portions of Banshee link the ghostty-vt static library,

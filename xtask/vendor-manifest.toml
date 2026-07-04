@@ -61,4 +61,5 @@ zig-sha256      = "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14c
 "include/ghostty/vt/terminal.h" = { bytes = 46142, sha256 = "25c51cf3edd824a5432919df879d7ff58863f06aaa120e469bb009a8552994d1" }
 "include/ghostty/vt/types.h" = { bytes = 9903, sha256 = "b1a3511b1fcbe50b95a77660c975185fb9a9d222521e4df51734f0bdada4ee78" }
 "include/ghostty/vt/wasm.h" = { bytes = 4765, sha256 = "e26a54bab795870282f3983404f22bbe197c163b879278586b7daf66d022ba8c" }
-"lib/x64/ghostty-vt-static.lib" = { bytes = 8562370, sha256 = "4809d36d6b7cd87a04c6b26531e80b7107c7b52b211a5846e9c47c285413c962" }
+"lib/arm64/ghostty-vt-static.lib" = { bytes = 7542612, sha256 = "4b8781881a8c5f8bda43964d8404798fe36742d044e2843aef32cf0efb5e41f4" }
+"lib/x64/ghostty-vt-static.lib" = { bytes = 8558316, sha256 = "b6a3dccb9fec897d279920a3eea790a4fcee4e6ce658a68fc2ef5c79926c2cde" }

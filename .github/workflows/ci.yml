@@ -22,16 +22,15 @@ jobs:
         run: cargo test --workspace
 
   arm64-build:
-    name: build (arm64, check-only until arm64 vt lib is vendored)
+    name: build (arm64)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-pc-windows-msvc
-      # TODO(M0 exit): flip `check` back to `build` once the vendor-vt workflow
-      # has produced and committed vendor/ghostty-vt/lib/arm64/ — bins cannot
-      # link ARM64 without it. `check` still proves the whole workspace
-      # compiles for aarch64; the vendored-lib link proof lives in vendor-vt.yml.
-      - name: cargo check --target aarch64-pc-windows-msvc
-        run: cargo check --workspace --target aarch64-pc-windows-msvc
+      # Full build (link included): the arm64 vt static lib is vendored, and
+      # windows-latest ships the x64-hosted ARM64 MSVC cross linker. This is
+      # the M0 "ARM64 must link" gate running on every PR.
+      - name: cargo build --target aarch64-pc-windows-msvc
+        run: cargo build --workspace --target aarch64-pc-windows-msvc

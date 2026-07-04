@@ -49,10 +49,10 @@ $env:PATH = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\T
 
 (Adjust the MSVC version path to match your install; find it with
 `Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC"`.)
-GitHub-hosted `windows-latest` runners have this on `PATH` already via the
-preinstalled Visual Studio, so `.github/workflows/fuzz-nightly.yml` does not
-need to add it explicitly (verified by the nightly job's own successful run;
-if that ever regresses, add the same `PATH` prepend there).
+GitHub-hosted `windows-latest` runners do NOT have this dir on `PATH`
+(the first dispatched run died with `STATUS_DLL_NOT_FOUND`), so
+`.github/workflows/fuzz-nightly.yml` prepends it explicitly via vswhere —
+the CI equivalent of the line above.
 
 ## Corpus / artifacts
 

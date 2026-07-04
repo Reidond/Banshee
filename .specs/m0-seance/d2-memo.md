@@ -61,8 +61,9 @@ is the consumption route until Microsoft publishes it. Re-verify at each milesto
   idempotence (MSVC archives nondeterministic); supply-chain aborts wired. Upstream friction
   found: Zig relative-path underflow spawning `uucode_build_tables` (worked around via
   work-tree global cache); upstream PR #13151 (shared-lib CRT) does not affect the static path.
-  **ARM64 lib: PENDING-CI** (host lacks ARM64 MSVC CRT; elevation refused — install
-  "C++ ARM64 build tools" via VS Installer to produce it locally).
+  **ARM64 lib: RESOLVED** — produced by the vendor-vt CI run (28690119497, idempotence
+  asserted), committed with the re-pinned manifest; ci.yml ARM64 job flipped to a full
+  `build` (link proof on every PR). Local rebuilds still need the VS ARM64 component.
 
 - **End-to-end integration (T10)**: the full thread — keystroke → term-input encoder →
   ConPTY(pwsh) → vt feed → snapshot → per-cell colors → term-render instanced grid →

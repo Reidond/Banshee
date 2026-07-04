@@ -69,9 +69,14 @@ jobs:
           }
           Write-Host "IDEMPOTENT: vendored checksums identical across both runs."
 
-      - name: Upload vendored artifact
+      # The manifest's [artifacts] section is rewritten by the --force run and
+      # must travel with the vendor tree — committing one without the other
+      # breaks the verify-not-rebuild path.
+      - name: Upload vendored artifact + re-pinned manifest
         uses: actions/upload-artifact@v4
         with:
           name: ghostty-vt-vendor
-          path: vendor/ghostty-vt/
+          path: |
+            vendor/ghostty-vt/
+            xtask/vendor-manifest.toml
           if-no-files-found: error
