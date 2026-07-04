@@ -169,6 +169,30 @@ impl GridRenderer {
         height: u32,
         frame_index: u64,
     ) -> Result<()> {
+        let mut colors = Vec::with_capacity(self.instance_count as usize);
+        for cy in 0..self.rows {
+            for cx in 0..self.cols {
+                colors.push(self.cell_color(cx, cy, frame_index));
+            }
+        }
+        self.render_cells(context, rtv, width, height, &colors)
+    }
+
+    /// Draw one frame with caller-provided per-cell colors (row-major,
+    /// `cols * rows` entries; missing entries render as transparent-black).
+    ///
+    /// T10 addition: the integration thread renders vt `GridSnapshot`-derived
+    /// colors through the same instanced path the animated spike uses. Glyph
+    /// rendering (DirectWrite/HarfBuzz) is M1; a colored cell grid is the M0
+    /// end-to-end evidence shape.
+    pub fn render_cells(
+        &self,
+        context: &ID3D11DeviceContext,
+        rtv: &ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        colors: &[[f32; 4]],
+    ) -> Result<()> {
         // Rebuild the instance buffer for this frame's colors.
         let mut instances = Vec::with_capacity(self.instance_count as usize);
         let cw = 1.0 / self.cols as f32;
@@ -177,6 +201,7 @@ impl GridRenderer {
         let pad = 0.15;
         for cy in 0..self.rows {
             for cx in 0..self.cols {
+                let idx = (cy * self.cols + cx) as usize;
                 instances.push(CellInstance {
                     rect: [
                         cx as f32 * cw + cw * pad * 0.5,
@@ -184,7 +209,7 @@ impl GridRenderer {
                         cw * (1.0 - pad),
                         ch * (1.0 - pad),
                     ],
-                    color: self.cell_color(cx, cy, frame_index),
+                    color: colors.get(idx).copied().unwrap_or([0.0; 4]),
                 });
             }
         }

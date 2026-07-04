@@ -20,11 +20,14 @@ usable-if-spartan terminal (see tasks.md).
 - **Q3 — device topology.** Default: one D3D device per window (matches SPEC §5.1 render-thread-per-window). Recorded as the default now; revisit only if M4 ARM64 hybrid-GPU testing surfaces problems.
 - **Q4 — Ghostty config-name posture.** Adopt Ghostty vocabulary where concepts match (`font-family`, `theme`, `window-padding-x`, …), documented as *inspiration not compatibility promise* (SPEC §6.7 wording). Every key documented at introduction; the config reference doc is a deliverable of the config task, not an afterthought.
 
-**Gap Log absorption.** If M0 recorded `missing` for selection state, hyperlink ids,
-or query responses, the corresponding fallback work (selection over snapshots in
-`term-core`; response interception before feed) is added to Phase 1 at re-baseline.
-This design assumes the SPEC-listed fallbacks are sufficient; if M0 found a gap with
-*no* viable fallback, that is a design-revision trigger, not a task edit.
+**Gap Log absorption (RESOLVED at M0 re-baseline, 2026-07-04).** The Gap Log recorded
+`exposed` for selection state, query responses (write-PTY callback), Kitty payloads,
+dirty rows, and scrollback read — the selection-over-snapshots and
+intercept-before-feed fallback work items are **dropped from Phase 1**. Hyperlink ids
+are `partial` (URI exposed, no numeric id): `term-core` keys hyperlinks by URI until
+upstream adds ids. The M1 render loop should migrate from M0's per-cell grid-ref walk
+to the `ghostty_render_state_*` iterator (render.h) — that is the framerate path.
+No gap without a viable fallback was found; no design revision triggered.
 
 ## Component Design
 

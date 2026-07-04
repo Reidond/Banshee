@@ -2,8 +2,25 @@
 
 > Source: [SPEC.md](../../SPEC.md) §4.1, §6.3, §6.5, §6.7, §13 (M1 row). Timebox: ~6 weeks.
 > Entry: M0 exit criteria met — D2 memo written, Gap Log complete, ConPTY lifecycle proven.
-> **Re-baseline note**: this document was drafted before M0 ran; Task 11 of m0-seance
-> updates it with the tier verdict and Gap Log fallbacks before implementation starts.
+> **Re-baseline (M0 actuals, 2026-07-04 — see [d2-memo](../m0-seance/d2-memo.md) + [gap-log](../m0-seance/gap-log.md)):**
+> 1. **Tier A confirmed** (windows-reactor via git pin; SwapChainPanel route). M1 stays in Tier A.
+> 2. **Reactor has NO keyboard/char/focus/IME surface** (vtable stubs, no TSF). The M1 input
+>    plan must treat `app-shell/src/ime.rs` + a Win32 message path (HWND subclass or message
+>    hook beneath the XAML tree) as the *entire* input layer, not a supplement. This was
+>    always the §6.3 shape; M0 removed any hope of framework help.
+> 3. **Gap Log came back better than SPEC feared**: selection state, DSR/DA responses,
+>    Kitty payloads, dirty rows, scrollback read are all `exposed`. The snapshot-based
+>    selection fallback and intercept-before-feed response fallback are NOT needed.
+>    Only numeric hyperlink ids are missing — key by URI string until upstream adds ids.
+> 4. **Render loop**: prefer the C API's `ghostty_render_state_*` iterator (render.h) over
+>    the M0 per-cell grid-ref walk for the framerate path (Gap Log note).
+> 5. **PSReadLine reality**: real profiles interleave SGR/redraw sequences with echo —
+>    input handling must not assume clean echo (found via T8; spike used -NoProfile).
+> 6. **Perf floor from M0**: 159 fps sustained loop-side with a live session; keypress→present
+>    13.4 ms p95 at M0's relaxed 30 ms target. The M1 ≤15 ms p99 NFR needs PresentMon
+>    correlation and headroom work, not a rescue.
+> 7. **ARM64**: x64 lib vendored; arm64 lib comes from the CI vendor job (dev host lacks
+>    the ARM64 MSVC CRT); CI ARM64 job is check-only until that lands.
 
 ## Problem Statement
 

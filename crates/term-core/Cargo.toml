@@ -4,5 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Safe, thin wrapper over libghostty-vt (via ghostty-vt-sys). Hides the FFI; exposes feed/resize/snapshot/responses per SPEC §6.1."
 
 [dependencies]
+ghostty-vt-sys = { path = "../ghostty-vt-sys" }

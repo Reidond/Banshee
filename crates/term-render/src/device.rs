@@ -65,7 +65,10 @@ impl Device {
             D3D11CreateDevice(
                 None,
                 driver_type,
-                HMODULE::default(),
+                // git-snapshot windows takes Option<HMODULE> here (T10 patch
+                // unifies the workspace on the reactor rev; drop when Reactor
+                // publishes and the patch goes away).
+                Some(HMODULE::default()),
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 Some(&feature_levels),
                 D3D11_SDK_VERSION,

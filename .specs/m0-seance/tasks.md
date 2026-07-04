@@ -37,7 +37,7 @@ Task 11 itself is the milestone exit review.
   - [ ] `cargo build && cargo test` green on a clean clone (empty crates)
   - [ ] CI runs fmt + clippy + test on PR for x64; ARM64 build job present (may be link-only)
 - **Test requirements**: CI itself is the test
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 2: `xtask vendor-vt` pipeline (UC-01)
 
@@ -50,7 +50,7 @@ Task 11 itself is the milestone exit review.
   - [ ] x64 + ARM64 static libs + header vendored with recorded checksums
   - [ ] Failure path leaves the prior artifact untouched (UC-01 failure postcondition)
 - **Test requirements**: CI vendor job run twice — idempotent output, identical checksums
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 3: `ghostty-vt-sys` bindgen + link
 
@@ -62,7 +62,7 @@ Task 11 itself is the milestone exit review.
   - [ ] `cargo build` pure-Rust (no Zig invocation) links the vendored lib on x64 and ARM64
   - [ ] Smoke test: construct terminal, feed `"hi"`, snapshot without error (UC-01 step 6)
 - **Test requirements**: link smoke test in CI both arches
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 4: `term-core` safe wrapper + Gap Log verification (UC-02)
 
@@ -74,7 +74,7 @@ Task 11 itself is the milestone exit review.
   - [ ] feed/resize/snapshot round-trip per the SPEC §6.1 contract shape
   - [ ] Every §6.1(3) capability (selection, hyperlink ids, Kitty payload access, query responses) recorded in gap-log.md as `exposed` or `missing → fallback chosen` (UC-02 step 6)
 - **Test requirements**: unit tests over wrapper; gap-log entries each cite the probing test
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 5: Conformance golden harness v0 + fuzz seam (UC-02)
 
@@ -85,7 +85,7 @@ Task 11 itself is the milestone exit review.
   - [ ] Scripted streams (SGR truecolor, alt screen, scroll regions, OSC set, bracketed paste, mouse modes) → checked-in golden grid dumps, green in CI
   - [ ] cargo-fuzz feed target runs ≥ 1 CPU-hour without crash (UC-02 E1); 200k-line flood shows bounded memory (E2)
 - **Test requirements**: the harness is the test; fuzz job wired into CI (short run per PR, long run nightly)
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 6: D3D11 composition swapchain spike (UC-04 steps 1, 3)
 
@@ -96,7 +96,7 @@ Task 11 itself is the milestone exit review.
   - [ ] Flip-model composition swapchain (2 buffers, waitable, max latency 1) draws an animated colored grid
   - [ ] Injected device-removed is survived by recreation without process crash (UC-04 E2)
 - **Test requirements**: manual run + device-removed test hook; WARP smoke in CI
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 7: Tier-A shell spike — hosting, focus, TSF probe (UC-04 step 2 + Gherkin feature)
 
@@ -107,7 +107,7 @@ Task 11 itself is the milestone exit review.
   - [ ] windows-reactor window hosts the swapchain via `SwapChainPanel` or composition visual (UC-04 A1), or the E1 exit condition is formally recorded and Tier B invoked
   - [ ] All four Gherkin scenarios pass (typing, AltGr, IME commit-once, focus-loss cancel)
 - **Test requirements**: manual matrix run recorded in the D2 memo (JA IME, UA/DE layouts)
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 8: ConPTY echo spike (UC-03)
 
@@ -118,7 +118,7 @@ Task 11 itself is the milestone exit review.
   - [ ] Spawn/IO/resize/exit lifecycle green for pwsh and cmd (UC-03 A1)
   - [ ] Exit detected via process-handle wait within 200 ms (E1); resize storm coalesced without deadlock (E2); host-kill leaves zero orphans (E3)
 - **Test requirements**: automated lifecycle tests (exit codes, resize storm, orphan check)
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 9: `term-input` encoder skeleton + golden rig
 
@@ -129,7 +129,7 @@ Task 11 itself is the milestone exit review.
   - [ ] Legacy xterm encoding for the basic set (printables, Enter/Tab/Backspace, arrows, Ctrl+letter) behind the encoder interface
   - [ ] Golden rig executes a table of (key event → expected bytes); AltGr/dead-key cases present (full Kitty matrix deferred to M1)
 - **Test requirements**: golden table in CI
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 10: End-to-end integration thread (exit-criteria assembly)
 
@@ -141,7 +141,7 @@ Task 11 itself is the milestone exit review.
   - [ ] Keystroke → encoder → PTY → pwsh echo → vt feed → snapshot → rendered grid, inside the Tier-A shell
   - [ ] Grid sustains ≥ 118 fps p95 / 60 s with the echo session live (NFR); keypress→present ≤ 30 ms p95 measured
 - **Test requirements**: PresentMon capture archived as memo evidence
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 11: D2 decision memo + Gap Log finalization + M1 re-baseline
 
@@ -153,10 +153,15 @@ Task 11 itself is the milestone exit review.
   - [ ] Gap Log covers all §6.1(3) items; M1 spec updated where fallbacks change its design
   - [ ] M1–M4 estimates recalibrated (SPEC §13 note: "that's what M0 is for")
 - **Test requirements**: N/A (review artifact); milestone exit review = Standard quality gate
-- **Status**: [ ] Not started
+- **Status**: [x] Done (2026-07-04)
 
 ## Deviations Log
 
 | Task | Deviation | Rationale |
 |------|-----------|-----------|
-| — | — | — |
+| T2 | ARM64 static lib not vendored locally; produced by the CI vendor job instead | Dev host lacks the MSVC ARM64 CRT (VS component absent; quiet install requires elevation, refused). Escape hatch `VENDOR_VT_ALLOW_MISSING_ARCHES=1` downgrades only the toolchain-missing failure; genuine build errors still abort. |
+| T2 | Idempotence = verify-not-rebuild default, not byte-reproducible rebuilds | MSVC/LLVM static archives embed timestamps/paths — three `--force` builds gave three hashes. Task's documented fallback applied; CHECKSUMS.txt is byte-stable across verify runs. |
+| T1→T10 | CI ARM64 job runs `cargo check`, not `build`, until the arm64 vt lib lands in vendor/ | Bins cannot link ARM64 without the vendored lib; TODO in ci.yml flips it back after the first vendor-vt.yml run. |
+| T5 | Fuzz target builds with `RUSTFLAGS=-C target-feature=+crt-static` | Zig-built static lib uses static CRT; libfuzzer defaults to /MD — LNK2038 without it. Documented in fuzz README + nightly workflow. |
+| T7 | Input/IME evidence via HWND subclass, not reactor callbacks | Reactor exposes no key/char/focus/IME API at the pinned rev (vtable stubs); a real terminal needs the Win32/TSF path regardless. First-class D2 finding. |
+| T10 | term-render gained `render_cells`; root `[patch.crates-io]` pins all windows-rs crates to the reactor git rev; one `Option<HMODULE>` signature fix | Snapshot-driven colors needed a caller-color entry (additive). Cross-crate D3D type identity requires one `windows` instance while Reactor is git-only — patch documented for removal on publish. |

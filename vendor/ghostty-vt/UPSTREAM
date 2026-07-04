@@ -1,0 +1,19 @@
+ghostty-vt vendored artifact — provenance & attribution
+========================================================
+
+Upstream project : ghostty (https://github.com/ghostty-org/ghostty)
+Pinned commit    : d560c645488d158c3e554e13025c0eaad68d1f43
+Commit date      : 2026-07-03
+Source tarball   : https://codeload.github.com/ghostty-org/ghostty/tar.gz/d560c645488d158c3e554e13025c0eaad68d1f43
+Source sha256    : 95f6df167c3c02be2a0db8e6b88f83f581bb073a53f533a26f41941e7adef397
+Built with Zig   : 0.15.2
+Build target(s)  : x86_64-windows-msvc (static vt lib)
+
+License          : MIT (matches Ghostty & the libghostty ecosystem).
+Attribution      : Portions of Banshee link the ghostty-vt static library,
+Copyright (c) Mitchell Hashimoto and Ghostty contributors,
+distributed under the MIT License. Attribution is surfaced
+in Banshee's About screen and NOTICE per SPEC §6.1(4).
+
+Do NOT edit files under vendor/ghostty-vt/ by hand — they are produced and
+re-pinned exclusively by `cargo xtask vendor-vt` (SPEC §5.2 / UC-01).

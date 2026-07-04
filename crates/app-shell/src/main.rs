@@ -24,9 +24,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use term_core::{CellWidth, GridSnapshot, StyleColor, Terminal, VtOptions};
+use term_input::{Encoder, Key, KeyEvent, Mode as EncMode, Modifiers};
+use term_pty::{ConPty, Shell};
+use term_render::GridRenderer;
 
 use windows::core::{w, Interface};
 use windows::Win32::Foundation::*;
@@ -50,15 +57,23 @@ const SELF_TEST_SECS: u64 = 5;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     /// Interactive: window stays open until closed; manual input matrix run here.
+    /// A live pwsh session is attached (T10): typing round-trips through the PTY.
     Interactive,
     /// Headless-friendly: run SELF_TEST_SECS, print SELFTEST lines, exit 0.
+    /// No PTY session — preserves the T7 hosting-evidence path unchanged.
     SelfTest,
+    /// T10 end-to-end proof: spawn pwsh, inject `echo m0-e2e` through the
+    /// term-input encoder, verify the echo lands in the rendered vt snapshot,
+    /// print E2E lines (incl. keypress→present latency), exit 0/1.
+    EchoSelfTest,
 }
 
 fn mode() -> Mode {
     static MODE: OnceLock<Mode> = OnceLock::new();
     *MODE.get_or_init(|| {
-        if std::env::args().any(|a| a == "--self-test") {
+        if std::env::args().any(|a| a == "--echo-selftest") {
+            Mode::EchoSelfTest
+        } else if std::env::args().any(|a| a == "--self-test") {
             Mode::SelfTest
         } else {
             Mode::Interactive
@@ -165,6 +180,8 @@ struct D3DState {
     height: u32,
     frame: u64,
     stats: FrameStats,
+    /// T10: term-render instanced grid, created lazily when a session exists.
+    grid: Option<GridRenderer>,
 }
 
 /// Create the flip-model composition swapchain in the exact UC-04 step-1 shape:
@@ -242,6 +259,7 @@ fn create_d3d(panel: &SwapChainPanelHandle, width: u32, height: u32) -> Result<D
         height,
         frame: 0,
         stats: FrameStats::new(),
+        grid: None,
     })
 }
 
@@ -265,11 +283,13 @@ impl D3DState {
         self.height = height;
     }
 
-    /// Draw one animated colored cell grid and present.
-    /// `// spike-local, replaced by term-render wiring in T10` — no font, no
-    /// shaders; each "cell" is a scissored clear so we exercise present timing
-    /// without pulling in the (not-yet-built) term-render crate.
-    fn render_frame(&mut self) {
+    /// Draw one frame and present.
+    ///
+    /// With a live session (T10): the vt snapshot's cell colors through
+    /// term-render's instanced grid — the real keystroke→…→present path.
+    /// Without one (--self-test): the original spike-local animated grid, so
+    /// the T7 hosting evidence stays reproducible unchanged.
+    fn render_frame(&mut self, session: Option<&mut TermSession>) {
         // Block on the waitable so we present at most one frame ahead. Timing out
         // rather than waiting forever keeps a headless/occluded window from
         // hanging the loop.
@@ -285,6 +305,15 @@ impl D3DState {
 
         self.frame += 1;
         let f = self.frame;
+
+        // T10: run the session tick (input→PTY, PTY→vt, snapshot) before drawing.
+        let session = match session {
+            Some(s) => {
+                s.tick();
+                Some(s)
+            }
+            None => None,
+        };
 
         unsafe {
             let backbuffer: ID3D11Texture2D = match self.swap_chain.GetBuffer(0) {
@@ -304,42 +333,69 @@ impl D3DState {
             }
             let rtv = rtv.unwrap();
 
-            // Background wash so the grid reads as animated even before cells draw.
-            let t = ((f as f64) * 0.02).sin().abs() as f32;
-            self.context
-                .ClearRenderTargetView(&rtv, &[0.03, 0.03 + 0.05 * t, 0.08, 1.0]);
-            self.context
-                .OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
-
-            // spike-local animated colored cell grid via scissored clears.
-            const COLS: u32 = 16;
-            const ROWS: u32 = 9;
-            let cw = (self.width / COLS).max(1);
-            let ch = (self.height / ROWS).max(1);
-            for gy in 0..ROWS {
-                for gx in 0..COLS {
-                    // A moving hue field: phase depends on cell + frame.
-                    let phase = (gx + gy) as f64 * 0.4 + (f as f64) * 0.08;
-                    let r = (0.5 + 0.5 * (phase).sin()) as f32;
-                    let g = (0.5 + 0.5 * (phase + 2.09).sin()) as f32;
-                    let b = (0.5 + 0.5 * (phase + 4.18).sin()) as f32;
-
-                    let x = gx * cw;
-                    let y = gy * ch;
-                    // 1px gutter so individual cells are visible.
-                    let rect = RECT {
-                        left: x as i32 + 1,
-                        top: y as i32 + 1,
-                        right: (x + cw) as i32 - 1,
-                        bottom: (y + ch) as i32 - 1,
-                    };
-                    if rect.right <= rect.left || rect.bottom <= rect.top {
-                        continue;
+            if let Some(session) = &session {
+                // ── T10 path: vt snapshot colors → term-render instanced grid ──
+                if self.grid.is_none() {
+                    match GridRenderer::new(
+                        &self.device,
+                        u32::from(GRID_COLS),
+                        u32::from(GRID_ROWS),
+                    ) {
+                        Ok(g) => self.grid = Some(g),
+                        Err(e) => probe("HOST", &format!("GridRenderer init FAILED: {e}")),
                     }
-                    // ClearView (11.1) fills only the given rect — a cheap
-                    // per-cell colored quad without shaders or scissor state.
-                    self.context1
-                        .ClearView(&rtv, &[r, g, b, 1.0], Some(&[rect]));
+                }
+                if let Some(grid) = &self.grid {
+                    let colors: &[[f32; 4]] = if session.colors.is_empty() {
+                        &[]
+                    } else {
+                        &session.colors
+                    };
+                    if let Err(e) =
+                        grid.render_cells(&self.context, &rtv, self.width, self.height, colors)
+                    {
+                        probe("HOST", &format!("render_cells failed: {e}"));
+                    }
+                }
+            } else {
+                // ── T7 path (--self-test): spike-local animated grid, unchanged ──
+                // Background wash so the grid reads as animated even before cells draw.
+                let t = ((f as f64) * 0.02).sin().abs() as f32;
+                self.context
+                    .ClearRenderTargetView(&rtv, &[0.03, 0.03 + 0.05 * t, 0.08, 1.0]);
+                self.context
+                    .OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+
+                // spike-local animated colored cell grid via scissored clears.
+                const COLS: u32 = 16;
+                const ROWS: u32 = 9;
+                let cw = (self.width / COLS).max(1);
+                let ch = (self.height / ROWS).max(1);
+                for gy in 0..ROWS {
+                    for gx in 0..COLS {
+                        // A moving hue field: phase depends on cell + frame.
+                        let phase = (gx + gy) as f64 * 0.4 + (f as f64) * 0.08;
+                        let r = (0.5 + 0.5 * (phase).sin()) as f32;
+                        let g = (0.5 + 0.5 * (phase + 2.09).sin()) as f32;
+                        let b = (0.5 + 0.5 * (phase + 4.18).sin()) as f32;
+
+                        let x = gx * cw;
+                        let y = gy * ch;
+                        // 1px gutter so individual cells are visible.
+                        let rect = RECT {
+                            left: x as i32 + 1,
+                            top: y as i32 + 1,
+                            right: (x + cw) as i32 - 1,
+                            bottom: (y + ch) as i32 - 1,
+                        };
+                        if rect.right <= rect.left || rect.bottom <= rect.top {
+                            continue;
+                        }
+                        // ClearView (11.1) fills only the given rect — a cheap
+                        // per-cell colored quad without shaders or scissor state.
+                        self.context1
+                            .ClearView(&rtv, &[r, g, b, 1.0], Some(&[rect]));
+                    }
                 }
             }
 
@@ -351,6 +407,12 @@ impl D3DState {
         }
 
         self.stats.record_present();
+
+        // T10: attribute pending keypresses to this present, and let the echo
+        // self-test conclude once its marker has rendered.
+        if let Some(session) = session {
+            session.after_present();
+        }
     }
 }
 
@@ -365,6 +427,337 @@ static AVG_FRAME_US: AtomicU64 = AtomicU64::new(0);
 static P95_FRAME_US: AtomicU64 = AtomicU64::new(0);
 /// Focus state (0 = unknown, 1 = focused, 2 = blurred) for the summary line.
 static FOCUS_STATE: AtomicU8 = AtomicU8::new(0);
+
+// ───────────────────────── T10: PTY⇄vt session (end-to-end thread) ─────────────────────────
+
+/// Fixed spike geometry: the PTY, the vt, and the rendered grid all share it.
+/// Dynamic resize correctness is an M1 concern (UC-03 E2 is already proven at
+/// the term-pty layer); M0 wires the data path at one geometry.
+const GRID_COLS: u16 = 100;
+const GRID_ROWS: u16 = 30;
+
+/// Encoded input bytes + the keypress timestamp, from the WM_* probe (real
+/// typing) or the echo self-test injector (synthetic KeyEvents).
+type InputMsg = (Vec<u8>, Instant);
+
+/// The subclass proc runs as a plain extern fn, so the input path to the
+/// session goes through a global channel installed at session creation.
+static INPUT_TX: OnceLock<Sender<InputMsg>> = OnceLock::new();
+
+/// One live end-to-end session: keystroke → encoder → ConPTY(pwsh) → vt feed →
+/// snapshot → per-cell colors → term-render instanced grid → present.
+struct TermSession {
+    conpty: ConPty,
+    term: Terminal,
+    /// Raw PTY output chunks, sent from the ConPty reader thread.
+    pty_rx: Receiver<Vec<u8>>,
+    /// Encoded keyboard bytes from the probe / injector.
+    input_rx: Receiver<InputMsg>,
+    snap: GridSnapshot,
+    /// Cell colors derived from the latest snapshot (row-major).
+    colors: Vec<[f32; 4]>,
+    /// Keypress stamps awaiting their first content-bearing present.
+    pending_keys: VecDeque<Instant>,
+    /// Completed keypress→present samples (ms).
+    key_to_present_ms: Vec<f64>,
+    /// True when this tick fed new PTY bytes (snapshot + colors refreshed).
+    fed_this_tick: bool,
+    /// Echo self-test state.
+    injected: bool,
+    echo_seen_at: Option<Instant>,
+    exit_logged: bool,
+    started: Instant,
+}
+
+impl TermSession {
+    fn spawn() -> std::io::Result<Self> {
+        let (pty_tx, pty_rx) = channel::<Vec<u8>>();
+        let conpty = ConPty::spawn(
+            Shell::Pwsh,
+            GRID_COLS as i16,
+            GRID_ROWS as i16,
+            move |chunk: &[u8]| {
+                // Reader thread: keep it cheap — copy and hand off.
+                let _ = pty_tx.send(chunk.to_vec());
+            },
+        )?;
+        let term = Terminal::new(GRID_COLS, GRID_ROWS, VtOptions::default())
+            .map_err(|e| std::io::Error::other(format!("vt construct failed: {e}")))?;
+
+        let (input_tx, input_rx) = channel::<InputMsg>();
+        let _ = INPUT_TX.set(input_tx);
+
+        probe(
+            "PTY",
+            &format!("session spawned: pwsh {GRID_COLS}x{GRID_ROWS} (T10 e2e thread)"),
+        );
+        Ok(Self {
+            conpty,
+            term,
+            pty_rx,
+            input_rx,
+            snap: GridSnapshot::new(),
+            colors: Vec::new(),
+            pending_keys: VecDeque::new(),
+            key_to_present_ms: Vec::new(),
+            fed_this_tick: false,
+            injected: false,
+            echo_seen_at: None,
+            exit_logged: false,
+            started: Instant::now(),
+        })
+    }
+
+    /// Pre-render tick: forward input to the PTY, drain PTY output into the vt,
+    /// drain vt query responses back to the PTY, refresh snapshot + colors.
+    fn tick(&mut self) {
+        self.fed_this_tick = false;
+
+        // Echo self-test: inject once, through the real encoder path.
+        if mode() == Mode::EchoSelfTest && !self.injected {
+            // Give pwsh -NoLogo -NoProfile a moment to reach its prompt so the
+            // injected keystrokes echo rather than racing startup output.
+            if self.started.elapsed() >= Duration::from_millis(2500) {
+                self.inject_echo_command();
+                self.injected = true;
+            }
+        }
+
+        // Keyboard → PTY (encoded bytes arrive stamped from the probe/injector).
+        while let Ok((bytes, at)) = self.input_rx.try_recv() {
+            self.pending_keys.push_back(at);
+            if let Err(e) = self.conpty.write(&bytes) {
+                probe("PTY", &format!("write failed: {e}"));
+            }
+        }
+
+        // PTY → vt.
+        while let Ok(chunk) = self.pty_rx.try_recv() {
+            self.term.feed(&chunk);
+            self.fed_this_tick = true;
+        }
+
+        // vt query responses (DSR/DA/OSC replies) → PTY writer (SPEC §6.1 shape).
+        let responses: Vec<Vec<u8>> = self.term.responses().collect();
+        for r in responses {
+            let _ = self.conpty.write(&r);
+        }
+
+        if self.fed_this_tick {
+            self.term.snapshot(&mut self.snap);
+            self.refresh_colors();
+            if mode() == Mode::EchoSelfTest && self.injected && self.echo_seen_at.is_none() {
+                self.scan_for_echo();
+            }
+        }
+
+        if !self.exit_logged {
+            if let Some(exit) = self.conpty.try_exit() {
+                self.exit_logged = true;
+                probe(
+                    "PTY",
+                    &format!(
+                        "child exited: code={} detect_latency={:?}",
+                        exit.code, exit.detect_latency
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Post-present hook: attribute pending keypresses to the first present
+    /// that carried fresh PTY-fed content. Loop-side approximation of the
+    /// keypress→present NFR (PresentMon correlation is the finalized method).
+    fn after_present(&mut self) {
+        if !self.fed_this_tick {
+            return;
+        }
+        let now = Instant::now();
+        while let Some(at) = self.pending_keys.pop_front() {
+            self.key_to_present_ms
+                .push(now.duration_since(at).as_secs_f64() * 1000.0);
+        }
+        // Echo self-test: once the echo was seen and rendered, report and exit.
+        if mode() == Mode::EchoSelfTest && self.echo_seen_at.is_some() {
+            self.report_e2e_and_exit();
+        }
+    }
+
+    /// Encode `echo m0-e2e\r` as individual KeyEvents through term-input —
+    /// the same path WM_CHAR typing takes — and stamp each for latency.
+    fn inject_echo_command(&self) {
+        let enc = Encoder::new(EncMode::default());
+        let tx = INPUT_TX.get().expect("session installed the input channel");
+        for ch in "echo m0-e2e".chars() {
+            let ev = KeyEvent::with_text(Key::Char(ch), Modifiers::NONE, ch.to_string());
+            let bytes = enc.encode(&ev);
+            let _ = tx.send((bytes, Instant::now()));
+        }
+        let enter = enc.encode(&KeyEvent::new(Key::Enter, Modifiers::NONE));
+        let _ = tx.send((enter, Instant::now()));
+        probe(
+            "E2E",
+            "injected 'echo m0-e2e' + Enter via term-input encoder",
+        );
+    }
+
+    /// Look for the echoed marker anywhere in the active grid.
+    fn scan_for_echo(&mut self) {
+        for row in &self.snap.rows_data {
+            let text: String = row
+                .cells
+                .iter()
+                .filter(|c| !matches!(c.width, CellWidth::SpacerTail))
+                .map(|c| char::from_u32(c.codepoint).unwrap_or(' '))
+                .collect();
+            if text.contains("m0-e2e") {
+                self.echo_seen_at = Some(Instant::now());
+                probe(
+                    "E2E",
+                    &format!("echo visible in vt snapshot: {:?}", text.trim_end()),
+                );
+                return;
+            }
+        }
+    }
+
+    fn report_e2e_and_exit(&self) -> ! {
+        let n = self.key_to_present_ms.len();
+        let (avg, p95) = if n == 0 {
+            (0.0, 0.0)
+        } else {
+            let avg = self.key_to_present_ms.iter().sum::<f64>() / n as f64;
+            let mut s = self.key_to_present_ms.clone();
+            s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let idx = (((n as f64) * 0.95).ceil() as usize).saturating_sub(1);
+            (avg, s[idx.min(n - 1)])
+        };
+        let frames = FRAMES_PRESENTED.load(Ordering::SeqCst);
+        println!(
+            "E2E echo_detected=true keys={n} key_to_present_avg_ms={avg:.2} \
+             key_to_present_p95_ms={p95:.2} frames_presented={frames} \
+             (loop-side; keystroke→encoder→ConPTY→pwsh echo→vt feed→snapshot→render→present)"
+        );
+        println!("E2E result=PASS");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        std::process::exit(0);
+    }
+
+    /// Derive per-cell colors from the snapshot: background from the cell's bg
+    /// style, content-bearing cells lit toward their fg color, cursor inverted.
+    /// (Glyphs are M1 — color is the M0 visibility vehicle.)
+    fn refresh_colors(&mut self) {
+        let cols = usize::from(GRID_COLS);
+        let rows = usize::from(GRID_ROWS);
+        self.colors.resize(cols * rows, DEFAULT_BG);
+        for (y, row) in self.snap.rows_data.iter().enumerate().take(rows) {
+            for (x, cell) in row.cells.iter().enumerate().take(cols) {
+                let bg = style_to_rgba(&cell.style.bg, DEFAULT_BG);
+                let mut c = bg;
+                let printable = cell.codepoint > 0x20;
+                if printable {
+                    let fg = style_to_rgba(&cell.style.fg, DEFAULT_FG);
+                    // Blend so text cells clearly light up against their bg.
+                    c = [
+                        bg[0] * 0.3 + fg[0] * 0.7,
+                        bg[1] * 0.3 + fg[1] * 0.7,
+                        bg[2] * 0.3 + fg[2] * 0.7,
+                        1.0,
+                    ];
+                }
+                self.colors[y * cols + x] = c;
+            }
+        }
+        // Cursor block overlay.
+        let (cx, cy) = (
+            usize::from(self.snap.cursor.x),
+            usize::from(self.snap.cursor.y),
+        );
+        if self.snap.cursor.visible && cx < cols && cy < rows {
+            self.colors[cy * cols + cx] = [0.95, 0.95, 0.85, 1.0];
+        }
+    }
+}
+
+const DEFAULT_BG: [f32; 4] = [0.05, 0.05, 0.10, 1.0];
+const DEFAULT_FG: [f32; 4] = [0.75, 0.80, 0.75, 1.0];
+
+/// Map a vt style color to RGBA. Palette entries use the standard 16 ANSI
+/// colors (256-cube entries collapse to a mid gray in M0 — themes are M2).
+fn style_to_rgba(c: &StyleColor, default: [f32; 4]) -> [f32; 4] {
+    const ANSI16: [[f32; 3]; 16] = [
+        [0.00, 0.00, 0.00],
+        [0.80, 0.00, 0.00],
+        [0.00, 0.80, 0.00],
+        [0.80, 0.80, 0.00],
+        [0.11, 0.32, 0.80],
+        [0.80, 0.00, 0.80],
+        [0.00, 0.80, 0.80],
+        [0.85, 0.85, 0.85],
+        [0.50, 0.50, 0.50],
+        [1.00, 0.33, 0.33],
+        [0.33, 1.00, 0.33],
+        [1.00, 1.00, 0.33],
+        [0.35, 0.55, 1.00],
+        [1.00, 0.33, 1.00],
+        [0.33, 1.00, 1.00],
+        [1.00, 1.00, 1.00],
+    ];
+    match c {
+        StyleColor::Rgb(r, g, b) => [
+            f32::from(*r) / 255.0,
+            f32::from(*g) / 255.0,
+            f32::from(*b) / 255.0,
+            1.0,
+        ],
+        StyleColor::Palette(i) if usize::from(*i) < 16 => {
+            let [r, g, b] = ANSI16[usize::from(*i)];
+            [r, g, b, 1.0]
+        }
+        StyleColor::Palette(_) => [0.55, 0.55, 0.55, 1.0],
+        StyleColor::None => default,
+    }
+}
+
+/// Translate a probe WM_CHAR into encoded PTY bytes (control chars pass
+/// through as-is; printables as UTF-8). Returns None for chars the encoder
+/// path should ignore here (surrogates).
+fn char_to_bytes(code: u32) -> Option<Vec<u8>> {
+    let ch = char::from_u32(code)?;
+    let enc = Encoder::new(EncMode::default());
+    let ev = KeyEvent::with_text(Key::Char(ch), Modifiers::NONE, ch.to_string());
+    let bytes = enc.encode(&ev);
+    if bytes.is_empty() {
+        // Control chars (< 0x20) arrive in WM_CHAR pre-translated by Win32
+        // (e.g. Enter = 0x0D, Ctrl+C = 0x03): forward the raw byte.
+        if code < 0x80 {
+            return Some(vec![code as u8]);
+        }
+        return None;
+    }
+    Some(bytes)
+}
+
+/// Translate a non-character WM_KEYDOWN vk into an encoder KeyEvent (arrows,
+/// nav cluster, F-keys — keys that produce no WM_CHAR).
+fn vk_to_key(vk: u32) -> Option<Key> {
+    Some(match vk {
+        0x21 => Key::PageUp,
+        0x22 => Key::PageDown,
+        0x23 => Key::End,
+        0x24 => Key::Home,
+        0x25 => Key::Left,
+        0x26 => Key::Up,
+        0x27 => Key::Right,
+        0x28 => Key::Down,
+        0x2D => Key::Insert,
+        0x2E => Key::Delete,
+        0x70..=0x7B => Key::F((vk - 0x6F) as u8),
+        _ => return None,
+    })
+}
 
 // ───────────────────────── Win32 HWND focus/IME/key probe ─────────────────────────
 
@@ -397,6 +790,17 @@ unsafe extern "system" fn probe_subclass_proc(
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let vk = wparam.0 as u32;
             let sys = msg == WM_SYSKEYDOWN;
+            // T10: non-character keys (arrows/nav/F) produce no WM_CHAR — encode
+            // them here and forward to the live session, stamped for latency.
+            if !sys {
+                if let (Some(key), Some(tx)) = (vk_to_key(vk), INPUT_TX.get()) {
+                    let bytes = Encoder::new(EncMode::default())
+                        .encode(&KeyEvent::new(key, Modifiers::NONE));
+                    if !bytes.is_empty() {
+                        let _ = tx.send((bytes, Instant::now()));
+                    }
+                }
+            }
             probe(
                 "KEY",
                 &format!(
@@ -416,6 +820,11 @@ unsafe extern "system" fn probe_subclass_proc(
                 .map(|c| c.escape_default().to_string())
                 .unwrap_or_else(|| format!("U+{code:04X}"));
             probe("CHAR", &format!("U+{code:04X} '{ch}'"));
+            // T10: forward the committed character (incl. Win32-pretranslated
+            // control chars like Enter/Ctrl+C) into the session, stamped.
+            if let (Some(bytes), Some(tx)) = (char_to_bytes(code), INPUT_TX.get()) {
+                let _ = tx.send((bytes, Instant::now()));
+            }
         }
         WM_IME_STARTCOMPOSITION => {
             IME_COMPOSING.store(true, Ordering::SeqCst);
@@ -577,19 +986,30 @@ fn spawn_self_test_watchdog() {
 fn app(cx: &mut RenderCx) -> Element {
     let d3d = cx.use_ref::<Option<D3DState>>(None);
     let rendering = cx.use_ref::<Option<Rendering>>(None);
+    // T10: the end-to-end session (pwsh + vt). None in --self-test so the T7
+    // hosting-evidence run stays session-free and deterministic.
+    let session = cx.use_ref::<Option<TermSession>>(None);
 
     // Per-frame render + probe install (install retries until the host exists).
     cx.use_effect((), {
         let rendering = rendering.clone();
         let d3d = d3d.clone();
+        let session = session.clone();
         move || {
             install_input_probe();
+            if mode() != Mode::SelfTest {
+                match TermSession::spawn() {
+                    Ok(s) => session.set(Some(s)),
+                    Err(e) => probe("PTY", &format!("session spawn FAILED: {e}")),
+                }
+            }
             let d3d = d3d.clone();
+            let session = session.clone();
             if let Ok(r) = on_rendering(move || {
                 // Late-install if the host wasn't ready on the first effect run.
                 install_input_probe();
                 if let Some(state) = d3d.borrow_mut().as_mut() {
-                    state.render_frame();
+                    state.render_frame(session.borrow_mut().as_mut());
                     publish_stats(&state.stats);
                     FRAMES_PRESENTED.store(state.frame, Ordering::SeqCst);
                 }
@@ -663,6 +1083,19 @@ fn main() -> Result<()> {
 
     if mode() == Mode::SelfTest {
         spawn_self_test_watchdog();
+    }
+    if mode() == Mode::EchoSelfTest {
+        // Hard deadline: if the echo never renders (PTY dead, vt stuck, race),
+        // fail deterministically rather than hanging CI/orchestrator runs.
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(25));
+            println!("E2E echo_detected=false (25 s deadline)");
+            println!("E2E result=FAIL-echo-not-rendered");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            std::process::exit(1);
+        });
     }
 
     App::new()

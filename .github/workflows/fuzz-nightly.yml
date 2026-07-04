@@ -1,0 +1,62 @@
+name: fuzz-nightly
+
+# Long-running fuzz + flood coverage for term-core (UC-02 E1/E2). PR CI stays
+# fast (the conformance goldens run there; this workflow does NOT run on PR).
+# Nightly cadence: 1 CPU-hour of the `feed` fuzz target, plus the #[ignore]d
+# 200k-line flood test that is too slow for the PR-fast loop.
+on:
+  schedule:
+    # 03:00 UTC nightly.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + nightly (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      # windows-latest ships Visual Studio with the ASan runtime DLL
+      # (clang_rt.asan_dynamic-x86_64.dll) already on PATH via the VC tools
+      # dir, and cargo-fuzz's ASan-instrumented binary needs it at *run* time.
+      # See crates/term-core/fuzz/README.md for the local-dev equivalent of
+      # this step, in case a runner image ever stops providing it.
+      - name: Run feed fuzz target (1 CPU-hour)
+        shell: pwsh
+        working-directory: crates/term-core
+        env:
+          # Required: the vendored ghostty-vt-static.lib is /MT (static CRT);
+          # libfuzzer-sys defaults to /MD. Building the fuzz crate itself with
+          # the static CRT reconciles the two. This MUST be an env var (not
+          # fuzz/.cargo/config.toml) because cargo-fuzz sets its own RUSTFLAGS
+          # internally, which otherwise silently wins over a config-file
+          # value. Full rationale: crates/term-core/fuzz/README.md.
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: |
+          cargo +nightly fuzz run feed -- -max_total_time=3600 -rss_limit_mb=4096
+
+      - name: Upload crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-feed-crashes
+          path: crates/term-core/fuzz/artifacts/feed/
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Run ignored flood test (UC-02 E2)
+        if: always()
+        run: cargo test -p term-core -- --ignored

@@ -1,0 +1,64 @@
+# vendor-manifest.toml — pins for `cargo xtask vendor-vt` (UC-01).
+#
+# FORMAT: intentionally minimal so xtask parses it with std only (no toml crate).
+#   - One `key = "value"` per line. Whitespace around `=` is ignored.
+#   - `#` starts a comment (whole-line or trailing).
+#   - A line that is exactly the section header (in brackets) scopes the keys
+#     under it. The artifacts section is REWRITTEN by xtask on every successful
+#     vendor run (produced checksums + byte sizes). Everything above it is
+#     hand-pinned and read-only to the tool.
+#   - `source-sha256 = "TOFU"` triggers trust-on-first-use: xtask computes the
+#     tarball hash on the first run and writes it back here. Subsequent runs
+#     verify against the recorded hash and abort on mismatch (UC-01 E2).
+#
+# All pins below were verified from primary sources on 2026-07-03.
+
+# --- ghostty upstream (the vt library we vendor) ---
+ghostty-commit  = "d560c645488d158c3e554e13025c0eaad68d1f43"  # main, 2026-07-03
+ghostty-date    = "2026-07-03"
+source-url      = "https://codeload.github.com/ghostty-org/ghostty/tar.gz/d560c645488d158c3e554e13025c0eaad68d1f43"
+source-sha256   = "95f6df167c3c02be2a0db8e6b88f83f581bb073a53f533a26f41941e7adef397"
+
+# --- Zig host toolchain (CI-only; contributors never need Zig) ---
+zig-version     = "0.15.2"  # ghostty's minimum_zig_version at the pinned commit
+zig-url         = "https://ziglang.org/download/0.15.2/zig-x86_64-windows-0.15.2.zip"
+zig-sha256      = "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14cb0c"
+
+# --- build invocation (cross-compiled by Zig from the x64 host) ---
+# x64:   zig build -Demit-lib-vt -Dtarget=x86_64-windows-msvc  -Doptimize=ReleaseFast --prefix <out>
+# arm64: zig build -Demit-lib-vt -Dtarget=aarch64-windows-msvc -Doptimize=ReleaseFast --prefix <out>
+
+# --- produced artifacts (REWRITTEN by xtask; do not edit by hand) ---
+[artifacts]
+# path (relative to vendor/ghostty-vt/) | size bytes | sha256
+"include/ghostty/vt.h" = { bytes = 5829, sha256 = "8edfc5c606d41fa8c9ec278c299ceb3e83815eee9eae3926e3c26f036b303841" }
+"include/ghostty/vt/allocator.h" = { bytes = 10638, sha256 = "7b21d6c62c79c261f9496154d04c82d7a35fc9f661113fa3f1ae437c20e4858b" }
+"include/ghostty/vt/build_info.h" = { bytes = 3354, sha256 = "535e44c29b5fd9c8df172605f58616df735432f7786ca24e3cc58d7cb3ba8361" }
+"include/ghostty/vt/color.h" = { bytes = 2557, sha256 = "c71dd6e60bb10ad4334e08d8529eecf56420a2be674281f91a50f81717840e99" }
+"include/ghostty/vt/device.h" = { bytes = 4648, sha256 = "90afd32d7341e486ad9fec58168a2ea16cafc78fa04864911e666786278135ab" }
+"include/ghostty/vt/focus.h" = { bytes = 2044, sha256 = "ddc28ead578ca9f683a4140420807ec9988a45f669d719e28cdf840913ea56b4" }
+"include/ghostty/vt/formatter.h" = { bytes = 6365, sha256 = "f13716568e52e5fd89b47d18ee31627a1dcae2e4202d85786c01b5f462a584fa" }
+"include/ghostty/vt/grid_ref.h" = { bytes = 8028, sha256 = "80cc49f02d63025605d605c86f1207638ad9534ce74e9a14766299e0518d4987" }
+"include/ghostty/vt/grid_ref_tracked.h" = { bytes = 4766, sha256 = "78c65cf69c1a6ee439849175221084366ca4392455503cc44e93cfdf9ddbc021" }
+"include/ghostty/vt/key.h" = { bytes = 2298, sha256 = "0f758d78bb5e6135255835c445429badab2daab54da82aa621ecafdd40ea8014" }
+"include/ghostty/vt/key/encoder.h" = { bytes = 9149, sha256 = "6963a275e2ba154a647382c462c416840dcdc2beb6d59aa200d80f37f9a5e196" }
+"include/ghostty/vt/key/event.h" = { bytes = 13432, sha256 = "0eb11bfab67b887f4b409557b396a5da6ea17e9e62d92b97a38e723b46db635d" }
+"include/ghostty/vt/kitty_graphics.h" = { bytes = 30424, sha256 = "d003470998b74de2c95f94eaf4c8e0ce72ec732fbfff3591bf48adf083bf476b" }
+"include/ghostty/vt/modes.h" = { bytes = 8166, sha256 = "85b9f1a703b22cfd92f61ba5179aa10d5987397d3b05b61c3abc08c51e2a508b" }
+"include/ghostty/vt/mouse.h" = { bytes = 2223, sha256 = "7a93a65a722624eee6afb03f008bbc37130b8504f0655f3e7a758c7e1435bf60" }
+"include/ghostty/vt/mouse/encoder.h" = { bytes = 6226, sha256 = "2e409c50fcd06806dd1a86cf66751ff35362c65e14ff588e2592e8a09141c017" }
+"include/ghostty/vt/mouse/event.h" = { bytes = 4923, sha256 = "68f14cd03109919cb8da36b17f70670334a3369af5c685496118c913c3049abf" }
+"include/ghostty/vt/osc.h" = { bytes = 7536, sha256 = "6b8b26417a82cc12efe98c35054bee255b89e7f28692d141e600ec3a7571664a" }
+"include/ghostty/vt/paste.h" = { bytes = 3006, sha256 = "dcf6b62a20428313cf1c6aab2177f8bafa11f72ac41a9eaf6566879df9efd8c1" }
+"include/ghostty/vt/point.h" = { bytes = 1698, sha256 = "cede17de0238a49a2bec81eba0a9a4214643f0f5066443a9cbd63c17affe729c" }
+"include/ghostty/vt/render.h" = { bytes = 26379, sha256 = "a8418b7109e939ec4da1a7efe0fe40f3b2a24fdc647bec575572226d36865eff" }
+"include/ghostty/vt/screen.h" = { bytes = 10620, sha256 = "9efc58ed188d76864b45dc1e89a994055030ec6eafd10490d54f2e7dbe7954ac" }
+"include/ghostty/vt/selection.h" = { bytes = 42591, sha256 = "1b51473b977f10cf090b171c767de3d536e8a5f1c3a81f06f5b45bae89854ac0" }
+"include/ghostty/vt/sgr.h" = { bytes = 11178, sha256 = "effc6205c273c5178f163a355077b7687d9359c60a7078098078efff8ace989e" }
+"include/ghostty/vt/size_report.h" = { bytes = 2994, sha256 = "a86cd1b0e5cf2307411030646285e5f2dcb1e6ca26e938cb6d578b16301e94a7" }
+"include/ghostty/vt/style.h" = { bytes = 2987, sha256 = "ebb50a1821952dd954dd51d5897f9881c6927abd73b909e2e2f1deb3a52f31a9" }
+"include/ghostty/vt/sys.h" = { bytes = 6591, sha256 = "dbd8e1499a68510b1393634191ba373c88f5b6fc01b33a76773cc98eb5e4a938" }
+"include/ghostty/vt/terminal.h" = { bytes = 46142, sha256 = "25c51cf3edd824a5432919df879d7ff58863f06aaa120e469bb009a8552994d1" }
+"include/ghostty/vt/types.h" = { bytes = 9903, sha256 = "b1a3511b1fcbe50b95a77660c975185fb9a9d222521e4df51734f0bdada4ee78" }
+"include/ghostty/vt/wasm.h" = { bytes = 4765, sha256 = "e26a54bab795870282f3983404f22bbe197c163b879278586b7daf66d022ba8c" }
+"lib/x64/ghostty-vt-static.lib" = { bytes = 8562370, sha256 = "4809d36d6b7cd87a04c6b26531e80b7107c7b52b211a5846e9c47c285413c962" }

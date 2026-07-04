@@ -1,0 +1,77 @@
+name: vendor-vt
+
+# Rebuilds and re-pins the vendored libghostty-vt static artifact (UC-01).
+# Manually triggered — a deliberate upstream commit bump or toolchain refresh.
+# This is the ONE place the two-toolchain problem (Zig + MSVC cross libs) lives;
+# day-to-day `cargo build` stays pure-Rust and never runs this.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vendor-vt:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable (MSVC, x64 + ARM64 targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      # The ARM64 cross build of the vendored C/C++ deps (simdutf, highway) needs
+      # the MSVC ARM64 CRT/libc++ for the aarch64-windows-msvc target. It is NOT
+      # installed by default on windows-latest — add the VS component explicitly.
+      # (Without it, xtask aborts the ARM64 build with LibCStdLibHeaderNotFound.)
+      - name: Install MSVC ARM64 build tools
+        shell: pwsh
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -property installationPath
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          & $installer modify --installPath "$vsPath" `
+            --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
+            --quiet --norestart --nocache | Out-Null
+          Write-Host "ARM64 MSVC tools install exit: $LASTEXITCODE"
+
+      # Run the vendor pipeline. Zig is downloaded + checksum-verified by xtask
+      # itself (no separate Zig setup step); the manifest pins its version + hash.
+      - name: Vendor run 1 (rebuild + re-pin)
+        shell: pwsh
+        run: cargo run -p xtask -- vendor-vt --force
+
+      - name: Snapshot run-1 checksums
+        shell: pwsh
+        run: Copy-Item vendor/ghostty-vt/CHECKSUMS.txt "${env:RUNNER_TEMP}/checksums-run1.txt"
+
+      # Second run is the default (verify-not-rebuild) path: it re-hashes the
+      # vendored artifacts against the manifest and must exit 0 without changing
+      # anything. The MSVC/LLVM static .lib embeds timestamps so raw rebuilds are
+      # not byte-reproducible; idempotence is proven at the pipeline-decision
+      # level — same recorded checksums, verify path taken, zero diff.
+      - name: Vendor run 2 (verify-not-rebuild)
+        shell: pwsh
+        run: cargo run -p xtask -- vendor-vt
+
+      - name: Assert idempotent (checksums identical between runs)
+        shell: pwsh
+        run: |
+          $diff = Compare-Object `
+            (Get-Content "${env:RUNNER_TEMP}/checksums-run1.txt") `
+            (Get-Content vendor/ghostty-vt/CHECKSUMS.txt)
+          if ($diff) {
+            Write-Error "vendor-vt is NOT idempotent: CHECKSUMS.txt changed between runs"
+            $diff | Format-Table -AutoSize
+            exit 1
+          }
+          Write-Host "IDEMPOTENT: vendored checksums identical across both runs."
+
+      - name: Upload vendored artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostty-vt-vendor
+          path: vendor/ghostty-vt/
+          if-no-files-found: error
