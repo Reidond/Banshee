@@ -8,7 +8,10 @@
 //! and trivially testable without pulling in platform crates.
 
 mod encoder;
+pub mod kitty;
 mod legacy;
+pub mod mouse;
+pub mod paste;
 
 pub use encoder::{Encoder, Mode};
 
