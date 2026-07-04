@@ -27,6 +27,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clipboard;
 mod ime;
 
 use std::collections::VecDeque;
@@ -35,7 +36,9 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use term_core::{CellWidth, GridSnapshot, SharedTerminal, Terminal, VtOptions};
+use term_core::{
+    CellWidth, GridSnapshot, SelectionMode, SharedTerminal, Terminal, VtOptions,
+};
 use term_input::{Encoder, Key, KeyEvent, Mode as EncMode, Modifiers};
 use term_pty::{ConPty, ResizePipeline, Shell};
 use term_render::{CellRenderer, GridRenderer};
@@ -398,13 +401,29 @@ impl D3DState {
                         origin_col: c.origin_col,
                         origin_row: c.origin_row,
                     });
+                    // Publish cell metrics so the input hook can map pixels →
+                    // cells for mouse-drag selection.
+                    publish_selection_metrics(renderer.metrics());
+                    // Selection overlay: turn the vt's per-row selection spans
+                    // (viewport coords) into renderer row-ranges. Linear and
+                    // block both map onto RowRange (row, col_start, col_end).
+                    let selection: Vec<term_render::RowRange> = session
+                        .term
+                        .selection_spans()
+                        .into_iter()
+                        .map(|s| term_render::RowRange {
+                            row: s.row,
+                            col_start: s.col_start,
+                            col_end: s.col_end,
+                        })
+                        .collect();
                     match renderer.render_snapshot(
                         &self.context,
                         &rtv,
                         self.width,
                         self.height,
                         &session.snap,
-                        &[], // selection model is a later task
+                        &selection,
                         composition.as_ref(),
                         force,
                     ) {
@@ -524,6 +543,48 @@ static WHEEL_TERM: OnceLock<SharedTerminal> = OnceLock::new();
 /// terminal's 3-line wheel step.
 const WHEEL_ROWS_PER_NOTCH: isize = 3;
 
+// ── M1 Task 12: mouse-drag selection + clipboard ──
+//
+// The hook procs are plain extern fns, so selection wiring (like wheel/IME)
+// lives in process globals. `SELECTION_TERM` is a clone of the session vt for
+// press/drag/release; `DRAG_ACTIVE` gates motion events to an in-flight drag;
+// `SELECTION_METRICS` publishes cell dims (packed f32 bits) for pixel→cell.
+
+/// A vt handle for the selection hook (press/drag/release + copy extraction).
+static SELECTION_TERM: OnceLock<SharedTerminal> = OnceLock::new();
+
+/// Whether a left-drag selection is in progress (armed on WM_LBUTTONDOWN,
+/// disarmed on WM_LBUTTONUP). Motion only extends the selection while armed.
+static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Cell metrics for pixel→cell mapping in the hook, packed as
+/// `(cell_w.to_bits() as u64) << 32 | cell_h.to_bits() as u64`. Published by the
+/// render tick once the renderer exists. 0 = not yet known (mouse is ignored).
+static SELECTION_METRICS: AtomicU64 = AtomicU64::new(0);
+
+/// Publish cell metrics for the selection hook's pixel→cell map.
+fn publish_selection_metrics(m: term_render::CellMetrics) {
+    let packed = ((m.cell_w.to_bits() as u64) << 32) | (m.cell_h.to_bits() as u64);
+    SELECTION_METRICS.store(packed, Ordering::Relaxed);
+}
+
+/// Read the published cell metrics, if any, as a partial `CellMetrics` (only the
+/// two dimensions the pixel→cell map needs are meaningful).
+fn selection_metrics() -> Option<term_render::CellMetrics> {
+    let packed = SELECTION_METRICS.load(Ordering::Relaxed);
+    if packed == 0 {
+        return None;
+    }
+    let cw = f32::from_bits((packed >> 32) as u32);
+    let ch = f32::from_bits((packed & 0xFFFF_FFFF) as u32);
+    Some(term_render::CellMetrics {
+        cell_w: cw,
+        cell_h: ch,
+        baseline: 0.0,
+        px_size: ch,
+    })
+}
+
 /// One live end-to-end session on the committed M1 stack:
 /// keystroke → encoder → ConPTY(pwsh) → vt feed → snapshot → CellRenderer → present.
 struct TermSession {
@@ -589,6 +650,11 @@ impl TermSession {
         );
         // Publish a vt handle for the wheel hook's routing predicate.
         let _ = WHEEL_TERM.set(term.clone());
+        // Publish a vt handle for the selection hook (press/drag/copy).
+        let _ = SELECTION_TERM.set(term.clone());
+        // PHASE3-INTEGRATION: ConfigService will feed clipboard_read /
+        // clipboard_write_max_bytes here; until then the vt keeps its
+        // config-matching defaults (Deny, 1 MB).
 
         probe(
             "PTY",
@@ -635,6 +701,24 @@ impl TermSession {
             if let Err(e) = self.conpty.write(&bytes) {
                 probe("PTY", &format!("write failed: {e}"));
             }
+        }
+
+        // M1 Task 12: OSC 52 clipboard requests the app fed via the PTY.
+        // WRITE: place decoded (size-capped) payloads on the OS clipboard.
+        #[cfg(windows)]
+        for payload in self.term.take_clipboard_writes() {
+            let text = String::from_utf8_lossy(&payload);
+            let ok = clipboard::set_text(&text);
+            probe("OSC52", &format!("clipboard write {} bytes ok={ok}", payload.len()));
+        }
+        // READ: only pending under an Allow policy (Deny is dropped at feed
+        // time). Answer with the current clipboard; the gated response is queued
+        // into the vt response stream and forwarded below.
+        #[cfg(windows)]
+        if self.term.clipboard_read_pending() {
+            let clip = clipboard::get_text().unwrap_or_default();
+            self.term.answer_clipboard_read(clip.as_bytes());
+            probe("OSC52", "clipboard read answered (policy=Allow)");
         }
 
         // vt query responses (DSR/DA/OSC replies) → PTY writer (SPEC §6.1 shape).
@@ -824,6 +908,131 @@ fn route_wheel(delta: i16) {
     }
 }
 
+// ── M1 Task 12: mouse-drag selection + copy/paste routing ──
+
+/// Extract pixel (x, y) from a mouse message `lParam` (low word = x, high word =
+/// y, both signed 16-bit relative to the client area).
+#[cfg(windows)]
+fn mouse_xy(lparam: LPARAM) -> (i32, i32) {
+    let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+    let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+    (x, y)
+}
+
+/// Read the live Ctrl/Shift/Alt modifier state via `GetKeyState`.
+#[cfg(windows)]
+fn modifier_state() -> (bool, bool, bool) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT,
+    };
+    // SAFETY: GetKeyState is a pure state read; the high bit means "down".
+    let down = |vk: i32| -> bool { (unsafe { GetKeyState(vk) } as u16 & 0x8000) != 0 };
+    (
+        down(VK_CONTROL.0 as i32),
+        down(VK_SHIFT.0 as i32),
+        down(VK_MENU.0 as i32),
+    )
+}
+
+/// Begin a mouse-drag selection at pixel `(px, py)`. Alt held → block
+/// (rectangular) selection (Windows Terminal convention); otherwise linear.
+#[cfg(windows)]
+fn selection_mouse_down(px: i32, py: i32, alt: bool) {
+    let (Some(term), Some(m)) = (SELECTION_TERM.get(), selection_metrics()) else {
+        return;
+    };
+    let (col, row) = clipboard::pixel_to_cell(px, py, &m);
+    let mode = if alt {
+        SelectionMode::Block
+    } else {
+        SelectionMode::Linear
+    };
+    term.selection_press(col, row, mode);
+    DRAG_ACTIVE.store(true, Ordering::Relaxed);
+    probe("SEL", &format!("press ({col},{row}) mode={mode:?}"));
+}
+
+/// Extend the in-flight selection to pixel `(px, py)`. No-op unless a drag is
+/// armed.
+#[cfg(windows)]
+fn selection_mouse_move(px: i32, py: i32) {
+    if !DRAG_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
+    let (Some(term), Some(m)) = (SELECTION_TERM.get(), selection_metrics()) else {
+        return;
+    };
+    let (col, row) = clipboard::pixel_to_cell(px, py, &m);
+    term.selection_drag(col, row);
+}
+
+/// Finalize the selection at pixel `(px, py)`.
+#[cfg(windows)]
+fn selection_mouse_up(px: i32, py: i32) {
+    if !DRAG_ACTIVE.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let (Some(term), Some(m)) = (SELECTION_TERM.get(), selection_metrics()) else {
+        return;
+    };
+    let (col, row) = clipboard::pixel_to_cell(px, py, &m);
+    term.selection_release(col, row);
+    probe("SEL", &format!("release ({col},{row})"));
+}
+
+/// Copy the current selection to the OS clipboard (Ctrl+Shift+C). No-op when
+/// there is no selection.
+#[cfg(windows)]
+fn do_copy() {
+    let Some(term) = SELECTION_TERM.get() else {
+        return;
+    };
+    let Some(text) = term.selection_text() else {
+        probe("SEL", "copy: no selection");
+        return;
+    };
+    if text.is_empty() {
+        return;
+    }
+    let ok = clipboard::set_text(&text);
+    probe("SEL", &format!("copy {} chars ok={ok}", text.chars().count()));
+}
+
+/// Paste from the OS clipboard through the bracketed-paste pipeline
+/// (Ctrl+Shift+V). Routes the same way the paste pipeline expects: bracketed if
+/// the app enabled it, chunked, through the shared input channel.
+#[cfg(windows)]
+fn do_paste() {
+    let Some(term) = SELECTION_TERM.get() else {
+        return;
+    };
+    let Some(text) = clipboard::get_text() else {
+        probe("SEL", "paste: clipboard empty / no text");
+        return;
+    };
+    if text.is_empty() {
+        return;
+    }
+    let bracketed = term.bracketed_paste_active();
+    let plan = term_input::paste::PastePlan::new(&text, bracketed, PASTE_CHUNK_BYTES);
+    let Some(tx) = INPUT_TX.get() else {
+        return;
+    };
+    // Route each chunk through the same channel typed input uses; the session
+    // tick writes them to the PTY in order (write_paste's flow-control lives on
+    // the PTY-writer side — here we hand ordered chunks to the session).
+    let mut chunks = 0usize;
+    for chunk in plan {
+        let _ = tx.send((chunk, Instant::now()));
+        chunks += 1;
+    }
+    probe("SEL", &format!("paste bracketed={bracketed} chunks={chunks}"));
+}
+
+/// Paste chunk size (bytes). Matches the paste pipeline's UTF-8-safe chunking;
+/// 4 KiB balances syscall count against latency for large pastes.
+const PASTE_CHUNK_BYTES: usize = 4096;
+
 // ──────────────────── Win32 thread-hook focus/IME/key/wheel probe ────────────────────
 //
 // WinUI 3 delivers input to its content-island *child* HWND (the InputSite
@@ -956,6 +1165,21 @@ fn inspect_input_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             }
             let vk = wparam.0 as u32;
             let sys = msg == WM_SYSKEYDOWN;
+            // M1 Task 12: Ctrl+Shift+C / Ctrl+Shift+V copy/paste chords are
+            // handled here and swallowed so they never reach the encoder (a bare
+            // Ctrl+C must still SIGINT — that path is unaffected because it lacks
+            // Shift). Checked before the vk_to_key encode below.
+            #[cfg(windows)]
+            {
+                let (ctrl, shift, alt) = modifier_state();
+                if let Some(chord) = clipboard::detect_copy_paste(vk, ctrl, shift, alt) {
+                    match chord {
+                        clipboard::CopyPasteKey::Copy => do_copy(),
+                        clipboard::CopyPasteKey::Paste => do_paste(),
+                    }
+                    return true; // swallow: not forwarded to the app/encoder
+                }
+            }
             if !sys {
                 if let (Some(key), Some(tx)) = (vk_to_key(vk), INPUT_TX.get()) {
                     let bytes = Encoder::new(EncMode::default())
@@ -1000,6 +1224,25 @@ fn inspect_input_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             // High word of wParam is the signed wheel delta (multiple of 120).
             let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
             route_wheel(delta);
+        }
+        // M1 Task 12: left-drag selection. Alt+left drag = block (rectangular)
+        // selection per the Windows Terminal convention. Only meaningful when a
+        // session + renderer exist; the helpers no-op otherwise (self-test).
+        #[cfg(windows)]
+        WM_LBUTTONDOWN => {
+            let (px, py) = mouse_xy(lparam);
+            let (_, _, alt) = modifier_state();
+            selection_mouse_down(px, py, alt);
+        }
+        #[cfg(windows)]
+        WM_MOUSEMOVE => {
+            let (px, py) = mouse_xy(lparam);
+            selection_mouse_move(px, py);
+        }
+        #[cfg(windows)]
+        WM_LBUTTONUP => {
+            let (px, py) = mouse_xy(lparam);
+            selection_mouse_up(px, py);
         }
         // WM_IME_CHAR: IMM's per-character echo of a committed result. Same guard
         // as WM_CHAR — swallow while armed so it never double-sends.

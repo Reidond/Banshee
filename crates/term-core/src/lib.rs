@@ -19,14 +19,18 @@
 //! thread owning `feed`/`responses` and handing snapshots to the render thread
 //! via a channel — not shared references. See the `unsafe impl Send` note below.
 
+mod osc52;
 mod render_state;
 mod scrollback;
+mod selection;
 mod snapshot;
 
+pub use osc52::{base64_decode, base64_encode, ClipboardReadPolicy, Osc52Request};
 pub use render_state::{
     CellRef, Cells, Colors, CursorInfo, CursorVisualStyle, Dirty, Frame, RenderState, RowIter,
     RowRef, RowSelection,
 };
+pub use selection::{SelectionMode, SelectionSpan};
 pub use snapshot::{
     Cell, CellWidth, CursorSnapshot, CursorStyle, GridSnapshot, RowSnapshot, StyleColor,
     StyleSnapshot, Underline,
@@ -119,7 +123,26 @@ pub struct Terminal {
     cell_height_px: u32,
     cols: u16,
     rows: u16,
+    /// In-flight text selection tracked Rust-side, mirroring the vt's installed
+    /// selection. `None` when no selection is active. See [`selection`].
+    selection: Option<selection::SelectionState>,
+    /// OSC 52 read gate. Deny (default) never reports the clipboard to the app.
+    clipboard_read: osc52::ClipboardReadPolicy,
+    /// OSC 52 write size cap in bytes (decoded). Default matches config's
+    /// `DEFAULT_CLIPBOARD_WRITE_MAX_BYTES` (1 MB). A write is truncated to this
+    /// many decoded bytes BEFORE it reaches the clipboard.
+    clipboard_write_max_bytes: usize,
+    /// Decoded OSC 52 write payloads awaiting the shell (which owns the OS
+    /// clipboard). Drained by [`Terminal::take_clipboard_writes`].
+    clipboard_writes: Vec<Vec<u8>>,
+    /// True when an OSC 52 read request awaits an answer. Set only under
+    /// `Allow`. See [`Terminal::answer_clipboard_read`].
+    pending_clipboard_read: bool,
 }
+
+/// Config-matching default OSC 52 write cap (1 MB). Kept in sync with
+/// `config::DEFAULT_CLIPBOARD_WRITE_MAX_BYTES` without a config dependency.
+pub const DEFAULT_CLIPBOARD_WRITE_MAX_BYTES: usize = 1_000_000;
 
 // SAFETY (SPEC §5.1): the vt handle is a self-contained, single-owner state
 // machine with no interior thread-affine resources (no TLS, no HWND, no COM
@@ -188,6 +211,11 @@ impl Terminal {
             cell_height_px: opts.cell_height_px,
             cols,
             rows,
+            selection: None,
+            clipboard_read: osc52::ClipboardReadPolicy::Deny,
+            clipboard_write_max_bytes: DEFAULT_CLIPBOARD_WRITE_MAX_BYTES,
+            clipboard_writes: Vec::new(),
+            pending_clipboard_read: false,
         })
     }
 
@@ -213,9 +241,75 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
+        // OSC 52 (clipboard) is NOT surfaced by the vt (no clipboard callback);
+        // sniff it out of the stream and apply the security gate before the vt
+        // silently consumes it. See `osc52`.
+        self.intercept_osc52(bytes);
         // SAFETY: `inner` is live; `bytes` is a valid slice for `len` bytes.
         // Reentrancy is impossible: we never call vt_write from the callback.
         unsafe { sys::ghostty_terminal_vt_write(self.inner, bytes.as_ptr(), bytes.len()) };
+    }
+
+    /// Sniff a complete OSC 52 request out of a fed chunk and apply gating.
+    ///
+    /// - **Write**: decode (already size-capped in the parser) and queue for the
+    ///   shell to set the OS clipboard (drained via [`Self::take_clipboard_writes`]).
+    /// - **Read**: record a pending read **only** when the policy is `Allow`; a
+    ///   `Deny` read is dropped here so no clipboard bytes can ever reach the pty.
+    fn intercept_osc52(&mut self, bytes: &[u8]) {
+        match osc52::parse_osc52(bytes, self.clipboard_write_max_bytes) {
+            Some(osc52::Osc52Request::Write(data)) => {
+                self.clipboard_writes.push(data);
+            }
+            // Allow: record a pending read for the shell to answer.
+            Some(osc52::Osc52Request::Read)
+                if self.clipboard_read == osc52::ClipboardReadPolicy::Allow =>
+            {
+                self.pending_clipboard_read = true;
+            }
+            // Deny read (or no request): intentionally dropped — no response is
+            // ever emitted, so no clipboard bytes reach the pty.
+            Some(osc52::Osc52Request::Read) => {}
+            None => {}
+        }
+    }
+
+    /// Set the OSC 52 clipboard-read policy and write size cap. Called by the
+    /// shell from resolved config (`PHASE3-INTEGRATION`); defaults match config.
+    pub fn set_clipboard_policy(&mut self, read: ClipboardReadPolicy, write_max_bytes: usize) {
+        self.clipboard_read = read;
+        self.clipboard_write_max_bytes = write_max_bytes;
+    }
+
+    /// Drain OSC 52 write payloads (decoded, size-capped) the application asked
+    /// to place on the clipboard. The shell owns the OS clipboard; term-core only
+    /// enforces the size cap and hands the bytes over.
+    #[must_use]
+    pub fn take_clipboard_writes(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.clipboard_writes)
+    }
+
+    /// Whether an OSC 52 **read** request is awaiting an answer. Only ever true
+    /// under [`ClipboardReadPolicy::Allow`] (a `Deny` read is dropped at feed
+    /// time), so the shell need not re-check the policy.
+    #[must_use]
+    pub fn clipboard_read_pending(&self) -> bool {
+        self.pending_clipboard_read
+    }
+
+    /// Answer a pending OSC 52 read with the current clipboard bytes, queueing
+    /// the base64 response for the pty (drained via [`Terminal::responses`]).
+    ///
+    /// Re-applies the policy gate defensively: under `Deny` this is a no-op and
+    /// **no bytes reach the pty**, even if called in error.
+    pub fn answer_clipboard_read(&mut self, clipboard: &[u8]) {
+        if !self.pending_clipboard_read {
+            return;
+        }
+        self.pending_clipboard_read = false;
+        if let Some(resp) = osc52::respond_read(clipboard, self.clipboard_read) {
+            self.callbacks.responses.push(resp);
+        }
     }
 
     /// Resize the grid. On the primary screen this reflows content when
@@ -528,6 +622,31 @@ impl SharedTerminal {
         // Lock is held for exactly this call and dropped at the end of the
         // statement — rendering that reads `render_state` afterwards is lock-free.
         render_state.update(&guard)
+    }
+
+    /// Set the OSC 52 clipboard policy under the lock. See
+    /// [`Terminal::set_clipboard_policy`].
+    pub fn set_clipboard_policy(&self, read: ClipboardReadPolicy, write_max_bytes: usize) {
+        self.lock().set_clipboard_policy(read, write_max_bytes);
+    }
+
+    /// Drain OSC 52 clipboard writes under the lock. See
+    /// [`Terminal::take_clipboard_writes`].
+    #[must_use]
+    pub fn take_clipboard_writes(&self) -> Vec<Vec<u8>> {
+        self.lock().take_clipboard_writes()
+    }
+
+    /// Whether an OSC 52 read is pending. See [`Terminal::clipboard_read_pending`].
+    #[must_use]
+    pub fn clipboard_read_pending(&self) -> bool {
+        self.lock().clipboard_read_pending()
+    }
+
+    /// Answer a pending OSC 52 read under the lock. See
+    /// [`Terminal::answer_clipboard_read`].
+    pub fn answer_clipboard_read(&self, clipboard: &[u8]) {
+        self.lock().answer_clipboard_read(clipboard);
     }
 
     /// Escape hatch: run an arbitrary closure with the locked [`Terminal`].

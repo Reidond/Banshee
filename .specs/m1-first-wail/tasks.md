@@ -178,10 +178,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Phase 3 (uses settled core; Gap Log path may move parts into `term-core`)
 - **Files to modify**: `crates/term-core/src/selection.rs`, `crates/app-shell/src/` (clipboard), `crates/term-render/src/overlay.rs`
 - **Acceptance criteria**:
-  - [ ] Linear + block selection with correct soft-wrap join semantics; overlay rendering
-  - [ ] Clipboard copy/paste; OSC 52 write cap + default read denial per requirements scenario
-- **Test requirements**: selection-model unit tests (wrap joins, block extraction); OSC 52 gate tests
-- **Status**: [ ] Not started
+  - [x] Linear + block selection via the vt's native `GhosttySelection{rectangle}` + `selection_format_buf` (native soft-wrap join, trailing-blank strip, one-newline-per-row block); overlay wired; selection survives scrolling feeds (pin semantics, test-proven)
+  - [x] Win32 clipboard (RAII CF_UNICODETEXT); ctrl+shift+c/v; paste through the T6 bracketed pipeline; OSC 52 hand-parsed in `feed` (no C clipboard callback exists) — write capped BEFORE base64 decode, read deny-by-default with zero PTY bytes on Deny
+- **Test requirements**: selection-model unit tests (wrap joins, block extraction); OSC 52 gate tests — 9 selection + 15 OSC 52 + 4 clipboard tests green (orchestrator-verified). Note: OSC 52 detection is single-chunk; split sequences fail SAFE (vt consumes silently, no clipboard effect).
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 13: E2E smoke + soak harness
 
