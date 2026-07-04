@@ -1904,24 +1904,17 @@ fn main() -> Result<()> {
         }
     );
 
-    // Initialize the Windows App SDK bootstrap so WinUI 3 can resolve the
-    // installed Microsoft.WindowsAppRuntime.2.x. If this fails, it is the UC-04
-    // E1 "bootstrap failure" signal — surface it loudly.
-    if let Err(e) = windows_reactor::bootstrap() {
-        eprintln!(
-            "[BANSHEE-M1] FATAL bootstrap() failed: {e}. This is UC-04 E1 territory \
-             (WinAppSDK runtime missing/mismatched). Install Microsoft.WindowsAppRuntime.2.x."
-        );
-        return Err(e);
-    }
-    eprintln!("[BANSHEE-M1] bootstrap() ok — WinAppSDK runtime resolved.");
-
+    // Watchdogs are armed BEFORE bootstrap: the WinAppSDK bootstrapper is built
+    // with OnNoMatch_ShowUI, so a machine without the runtime pops a modal
+    // dialog and the process would otherwise hang forever with no output —
+    // exactly what took CI down on the first PR run. Self-test modes must be
+    // able to time out no matter how early startup wedges.
     if mode() == Mode::SelfTest {
         spawn_self_test_watchdog();
     }
     if mode() == Mode::EchoSelfTest {
-        // Hard deadline: if the echo never renders (PTY dead, vt stuck, race),
-        // fail deterministically rather than hanging CI/orchestrator runs.
+        // Hard deadline: if the echo never renders (PTY dead, vt stuck, race,
+        // bootstrap dialog), fail deterministically rather than hanging CI.
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_secs(25));
             println!("E2E echo_detected=false (25 s deadline)");
@@ -1932,6 +1925,19 @@ fn main() -> Result<()> {
             std::process::exit(1);
         });
     }
+
+    // Initialize the Windows App SDK bootstrap so WinUI 3 can resolve the
+    // installed Microsoft.WindowsAppRuntime.2.x. If this fails, it is the UC-04
+    // E1 "bootstrap failure" signal — surface it loudly. (CI installs the
+    // runtime via aka.ms/windowsappsdk/2.0 — see ci.yml.)
+    if let Err(e) = windows_reactor::bootstrap() {
+        eprintln!(
+            "[BANSHEE-M1] FATAL bootstrap() failed: {e}. This is UC-04 E1 territory \
+             (WinAppSDK runtime missing/mismatched). Install Microsoft.WindowsAppRuntime.2.x."
+        );
+        return Err(e);
+    }
+    eprintln!("[BANSHEE-M1] bootstrap() ok — WinAppSDK runtime resolved.");
 
     App::new()
         .title("Banshee M1 shell")

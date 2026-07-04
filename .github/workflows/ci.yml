@@ -14,6 +14,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Install Windows App SDK runtime (2.0)
+        # app-shell is a framework-dependent WinUI3 app: without the runtime,
+        # windows_reactor::bootstrap() (built with OnNoMatch_ShowUI) pops a
+        # modal install dialog and the process hangs forever — which is how
+        # the first PR run of the e2e smoke timed out with no output. The
+        # runner image does not ship the runtime; install it silently.
+        run: |
+          Invoke-WebRequest -Uri "https://aka.ms/windowsappsdk/2.0/latest/windowsappruntimeinstall-x64.exe" -OutFile "$env:TEMP\wasdk-install.exe"
+          Start-Process -FilePath "$env:TEMP\wasdk-install.exe" -ArgumentList "--quiet","--force" -Wait -NoNewWindow
+          Get-AppxPackage -Name 'Microsoft.WindowsAppRuntime*' | Select-Object Name, Version
       - name: cargo fmt --check
         run: cargo fmt --check
       - name: cargo clippy

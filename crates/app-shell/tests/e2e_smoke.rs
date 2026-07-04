@@ -58,7 +58,21 @@ fn smoke_echo_selftest() {
         if start.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("app-shell --echo-selftest did not exit within {timeout:?}");
+            // Dump whatever the child managed to print — without this, a hang
+            // (e.g. the WinAppSDK bootstrap dialog on a machine missing the
+            // runtime) fails CI with zero diagnostics.
+            let mut out = String::new();
+            if let Some(mut s) = child.stdout.take() {
+                let _ = s.read_to_string(&mut out);
+            }
+            let mut err = String::new();
+            if let Some(mut s) = child.stderr.take() {
+                let _ = s.read_to_string(&mut err);
+            }
+            panic!(
+                "app-shell --echo-selftest did not exit within {timeout:?}\n\
+                 --- captured stdout ---\n{out}\n--- captured stderr ---\n{err}"
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     };
