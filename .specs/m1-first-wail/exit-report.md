@@ -33,6 +33,18 @@ framework-vs-terminal cost. Tracked as M1 defect **D-M1-1** (blocking-severity
 decision deferred to self-hosting; the SPEC target says "~80 MB", tilde
 acknowledged).
 
+## Automated live-input matrix (added 2026-07-04, post-code-complete)
+`crates/app-shell/tests/live_input_matrix.rs` (runner: `scripts/live-matrix.ps1`)
+automates the Banshee-side delivery contract of the manual input scenarios —
+focus-free (posted messages, runnable unattended/CI). **First run found and
+fixed two shipped bugs:** (1) WM_CHAR UTF-16 surrogate halves were dropped —
+emoji-panel input never reached the PTY (hook now reassembles pairs);
+(2) `Terminal::snapshot` read the ACTIVE area, so wheel scrollback scrolled
+the vt but never the screen (snapshot now reads the VIEWPORT tag; cursor
+hidden while scrolled; goldens unaffected). Residual human checks: real
+JA/ZH IME conversion UI + real-IME focus-loss cancel (M1-IME-1/2/5) — see the
+automation-status table in MANUAL-MATRIX.md.
+
 ## Interactive-lag defect (found by author, fixed 2026-07-04)
 **D-M1-fixed-2:** the frame-latency-waitable wait ran every frame, but the
 waitable only re-signals after a `Present` — so the first damage-skipped

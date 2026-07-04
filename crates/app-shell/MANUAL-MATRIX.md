@@ -243,6 +243,28 @@ picker, and clean focus-loss cancel.
 Fill in **Observed** / **Date & build** at run time. Build id: paste the first
 `[BANSHEE-M1]` startup line and the `git rev-parse --short HEAD`.
 
+### Automation status (tests/live_input_matrix.rs — run `scripts/live-matrix.ps1`)
+
+The Banshee-side delivery contract for these scenarios is covered by the
+automated live-input matrix (focus-free: it posts the exact WM_CHAR /
+WM_MOUSEWHEEL messages Windows delivers). Only the OS-side conversion UI
+remains human-verified:
+
+| Scenario | Status | Automated by |
+|---|---|---|
+| M1-IME-1 JA composition | **MANUAL** (needs real IME conversion UI) — commit/swallow path unit-tested in `ime.rs` | — |
+| M1-IME-2 ZH pinyin | **MANUAL** (same reason) | — |
+| M1-IME-3 UA/RU mid-line switch | **AUTOMATED** (byte-level: Cyrillic WM_CHARs mid-line round-trip) — visual spot-check optional | `cyrillic_mid_line_roundtrip` |
+| M1-IME-4 Win+. emoji | **AUTOMATED** (delivery path: surrogate-pair WM_CHARs → one UTF-8 sequence); opening the picker UI itself is manual-optional | `emoji_surrogate_pair_single_sequence` |
+| M1-IME-5 focus-loss cancel | **PARTIAL** — state machine unit-tested (`ime.rs`); real-IME cancel needs a human once | unit tests + manual |
+| M1-IME-6 PSReadLine interplay | **AUTOMATED** (real profile, realistic typing cadence, garbling assert) | `psreadline_profile_no_garbling` |
+| Wheel scrollback (requirements) | **AUTOMATED** (enter/pin/return) | `wheel_scrollback_pin_and_return` |
+
+> These tests already caught two shipped bugs on first run: WM_CHAR surrogate
+> halves were dropped (emoji never reached the PTY) and snapshots read the
+> ACTIVE area so wheel scrollback was invisible on screen. Keep them in the
+> release gate.
+
 ## Scenario M1-IME-1 — JA romaji → kanji commits once, rendered inline
 
 **Setup:** enable the Japanese IME (Hiragana input). Focus the window; ensure a

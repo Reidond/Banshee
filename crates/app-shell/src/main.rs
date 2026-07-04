@@ -641,6 +641,9 @@ const SELFTEST_ROWS: u32 = 30;
 
 /// Set once the panel's on_mounted fires and the swapchain attaches.
 static PANEL_MOUNTED: AtomicBool = AtomicBool::new(false);
+/// Pending high half of a UTF-16 surrogate pair split across two WM_CHAR
+/// messages (0 = none). Only touched on the UI thread (the message hook).
+static PENDING_HIGH_SURROGATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Latest frame count / stats snapshot, published for the self-test summary.
 static FRAMES_PRESENTED: AtomicU64 = AtomicU64::new(0);
 /// avg / p95 frame ms encoded as fixed-point micros for lock-free publish.
@@ -770,8 +773,7 @@ impl TermSession {
         // (tests/live_input_matrix.rs) to pin a deterministic bare-shell
         // profile (`pwsh.exe -NoLogo -NoProfile`) so grid assertions do not
         // depend on the operator's real default profile. Absent in normal use.
-        let config_override =
-            std::env::var_os("BANSHEE_CONFIG_PATH").map(std::path::PathBuf::from);
+        let config_override = std::env::var_os("BANSHEE_CONFIG_PATH").map(std::path::PathBuf::from);
         let config = ConfigService::start(config_override)
             .map_err(|e| std::io::Error::other(format!("config service: {e}")))?;
         let cfg = config.current();
@@ -1503,6 +1505,29 @@ fn inspect_input_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 .map(|c| c.escape_default().to_string())
                 .unwrap_or_else(|| format!("U+{code:04X}"));
             probe("CHAR", &format!("U+{code:04X} '{ch}'"));
+            // Astral-plane characters (emoji panel, some IME commits) arrive as
+            // TWO WM_CHAR messages carrying a UTF-16 surrogate pair — reassemble
+            // them; `char::from_u32` on a lone half is None and the char would
+            // otherwise be dropped (found by tests/live_input_matrix.rs).
+            let code = match code {
+                0xD800..=0xDBFF => {
+                    PENDING_HIGH_SURROGATE.store(code, Ordering::Relaxed);
+                    return true; // wait for the low half
+                }
+                0xDC00..=0xDFFF => {
+                    let high = PENDING_HIGH_SURROGATE.swap(0, Ordering::Relaxed);
+                    if !(0xD800..=0xDBFF).contains(&high) {
+                        probe("CHAR", &format!("U+{code:04X} lone low surrogate dropped"));
+                        return true;
+                    }
+                    0x10000 + ((high - 0xD800) << 10) + (code - 0xDC00)
+                }
+                _ => {
+                    // Any pending high surrogate never got its low half.
+                    PENDING_HIGH_SURROGATE.store(0, Ordering::Relaxed);
+                    code
+                }
+            };
             if let (Some(bytes), Some(tx)) = (char_to_bytes(code), INPUT_TX.get()) {
                 let _ = tx.send((bytes, Instant::now()));
             }

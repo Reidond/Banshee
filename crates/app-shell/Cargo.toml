@@ -81,9 +81,13 @@ rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f"
 version = "0.61"
 features = [
     "Win32_Foundation",
+    # live_input_matrix.rs + e2e_smoke.rs: window enumeration by pid/title and
+    # posted-message input (WM_CHAR incl. surrogate pairs, WM_MOUSEWHEEL,
+    # WM_CLOSE). Deliberately NOT SendInput: posted messages are focus-free
+    # and deterministic — see live_input_matrix.rs module docs.
     "Win32_UI_WindowsAndMessaging",
-    # live_input_matrix.rs: real SendInput (keyboard scancodes, KEYEVENTF_UNICODE,
-    # MOUSEEVENTF_WHEEL), keyboard-layout activation, and foreground/focus control.
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_Threading",
 ]
+
+# live_input_matrix.rs: temp config dirs for the BANSHEE_CONFIG_PATH override.
+[dev-dependencies]
+tempfile = "3"

@@ -384,7 +384,7 @@ impl Terminal {
     /// copying out codepoint, style, hyperlink id, and width. A default (blank)
     /// cell is returned if the ref cannot be resolved.
     fn read_cell(&self, x: u16, y: u16) -> Cell {
-        let point = active_point(x, y);
+        let point = viewport_point(x, y);
         let mut gref = zeroed_grid_ref();
         // SAFETY: `inner` live; out-pointers valid; result checked.
         let rc = unsafe { sys::ghostty_terminal_grid_ref(self.inner, point, &mut gref) };
@@ -458,7 +458,7 @@ impl Terminal {
 
     /// Read (dirty, wrapped) flags for a row via a grid ref at column `x`.
     fn read_row_flags(&self, x: u16, y: u16) -> Option<(bool, bool)> {
-        let point = active_point(x, y);
+        let point = viewport_point(x, y);
         let mut gref = zeroed_grid_ref();
         // SAFETY: as in read_cell.
         if unsafe { sys::ghostty_terminal_grid_ref(self.inner, point, &mut gref) }
@@ -488,7 +488,11 @@ impl Terminal {
             .unwrap_or(0);
         let visible = self
             .get_bool(sys::GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE)
-            .unwrap_or(true);
+            .unwrap_or(true)
+            // Cursor coordinates are active-area coords; while the viewport is
+            // scrolled into history (snapshot rows follow the viewport) the
+            // cursor cell is off-screen — don't paint it at a stale position.
+            && self.is_at_bottom();
         CursorSnapshot {
             x,
             y,
@@ -750,9 +754,14 @@ extern "C" fn write_pty_trampoline(
 
 // ---- small FFI read helpers (kept private; snapshot-path only) ----
 
-fn active_point(x: u16, y: u16) -> sys::GhosttyPoint {
+/// Snapshot reads resolve through the VIEWPORT tag, not ACTIVE: identical
+/// while the terminal sits at the bottom, but when the user scrolls into
+/// history the snapshot (and therefore the renderer and the debug grid dump)
+/// must show the scrolled viewport. Reading ACTIVE here made wheel scrollback
+/// invisible on screen (found by app-shell tests/live_input_matrix.rs).
+fn viewport_point(x: u16, y: u16) -> sys::GhosttyPoint {
     sys::GhosttyPoint {
-        tag: sys::GhosttyPointTag::GHOSTTY_POINT_TAG_ACTIVE,
+        tag: sys::GhosttyPointTag::GHOSTTY_POINT_TAG_VIEWPORT,
         value: sys::GhosttyPointValue {
             coordinate: sys::GhosttyPointCoordinate { x, y: u32::from(y) },
         },
