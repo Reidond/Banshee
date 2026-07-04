@@ -19,8 +19,13 @@
 //! thread owning `feed`/`responses` and handing snapshots to the render thread
 //! via a channel — not shared references. See the `unsafe impl Send` note below.
 
+mod render_state;
 mod snapshot;
 
+pub use render_state::{
+    CellRef, Cells, Colors, CursorInfo, CursorVisualStyle, Dirty, Frame, RenderState, RowIter,
+    RowRef, RowSelection,
+};
 pub use snapshot::{
     Cell, CellWidth, CursorSnapshot, CursorStyle, GridSnapshot, RowSnapshot, StyleColor,
     StyleSnapshot, Underline,
@@ -28,6 +33,7 @@ pub use snapshot::{
 
 use std::os::raw::c_void;
 use std::ptr;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use ghostty_vt_sys as sys;
 
@@ -405,6 +411,120 @@ impl Terminal {
     #[must_use]
     pub fn raw(&self) -> sys::GhosttyTerminal {
         self.inner
+    }
+}
+
+/// Shared-ownership terminal for the **Q2 render-sync model, variant A
+/// (brief read-lock)**.
+///
+/// # The Q2 decision this implements
+///
+/// SPEC §15 Q2 leaves render synchronization open between two variants:
+///
+/// - **Variant A — brief read-lock (this type).** The vt lives behind a lock.
+///   The PTY-reader thread takes the lock to [`feed`](SharedTerminal::feed)/
+///   [`resize`](SharedTerminal::resize)/drain [`responses`](SharedTerminal::responses).
+///   The render thread takes the *same* lock only for the duration of a single
+///   `ghostty_render_state_update` (via
+///   [`with_render_update`](SharedTerminal::with_render_update)); all subsequent
+///   per-cell rendering reads the render thread's *own* [`RenderState`] copy
+///   with no lock held.
+/// - **Variant B — double-buffered snapshot.** The reader publishes an owned
+///   snapshot the render thread reads lock-free.
+///
+/// Variant A is implemented first (simpler, zero copy cost). The flood benchmark
+/// (`tests/flood_sync.rs`) profiles it against the UI-stall NFR (< 8 ms); if the
+/// lock loses on measured data, variant B replaces this type. **The consumer
+/// contract is identical either way:** a consumer calls
+/// `with_render_update(&mut RenderState)` once per frame and then walks the
+/// `RenderState`. Swapping to variant B changes only what happens *inside*
+/// `with_render_update` (a snapshot copy instead of a lock), not its signature —
+/// so `term-render` does not change when the Q2 decision flips.
+///
+/// # Why `std::sync::Mutex`
+///
+/// The lock is held for microseconds (one `feed` batch or one render-state
+/// update) and is uncontended in the common case (reader and render thread
+/// rarely collide on a single tick). At that hold time the difference between
+/// `std::sync::Mutex` and `parking_lot` is not measurable against the 8 ms
+/// budget, and `std` avoids a new dependency in a crate that has exactly one.
+/// If the flood profile shows the *std* mutex's contention path costing us the
+/// NFR, `parking_lot` is a drop-in swap — but the data must justify it (per the
+/// project rule against unrequested scope). We deliberately do **not** use an
+/// `RwLock`: `feed` is a writer and `ghostty_render_state_update` also mutates
+/// (consumes dirty state), so every lock site needs exclusivity anyway.
+///
+/// Poisoning: a panic while holding the lock poisons it. We treat a poisoned
+/// lock as unrecoverable vt corruption and propagate the panic
+/// (`.expect(...)`) — a half-updated vt is not a state we can safely render.
+#[derive(Clone)]
+pub struct SharedTerminal {
+    inner: Arc<Mutex<Terminal>>,
+}
+
+impl SharedTerminal {
+    /// Wrap an owned [`Terminal`] for shared reader/render access.
+    #[must_use]
+    pub fn new(terminal: Terminal) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(terminal)),
+        }
+    }
+
+    /// Reader-thread side: feed PTY bytes under the lock.
+    ///
+    /// Holds the lock only for the `feed` call. See [`Terminal::feed`].
+    pub fn feed(&self, bytes: &[u8]) {
+        self.lock().feed(bytes);
+    }
+
+    /// Reader-thread side: resize under the lock. See [`Terminal::resize`].
+    ///
+    /// # Errors
+    /// Propagates [`TermError`] from [`Terminal::resize`].
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), TermError> {
+        self.lock().resize(cols, rows)
+    }
+
+    /// Reader-thread side: drain query responses under the lock, returning them
+    /// as an owned `Vec` (the lock is not held while the caller forwards them).
+    /// See [`Terminal::responses`].
+    #[must_use]
+    pub fn take_responses(&self) -> Vec<Vec<u8>> {
+        self.lock().responses().collect()
+    }
+
+    /// Render-thread side: refresh `render_state` from the shared terminal,
+    /// holding the lock **only** for the `ghostty_render_state_update` call.
+    ///
+    /// This is the entire lock footprint of the render side under variant A: on
+    /// return the lock is released and the caller walks `render_state`
+    /// ([`RenderState::frame`]) with no lock held, so per-cell rendering never
+    /// blocks the reader thread.
+    ///
+    /// # Errors
+    /// Propagates [`TermError`] from [`RenderState::update`].
+    pub fn with_render_update(
+        &self,
+        render_state: &mut RenderState,
+    ) -> Result<Dirty, TermError> {
+        let guard = self.lock();
+        // Lock is held for exactly this call and dropped at the end of the
+        // statement — rendering that reads `render_state` afterwards is lock-free.
+        render_state.update(&guard)
+    }
+
+    /// Escape hatch: run an arbitrary closure with the locked [`Terminal`].
+    /// For tests and reader-side operations not covered by the typed methods.
+    #[doc(hidden)]
+    pub fn with_locked<R>(&self, f: impl FnOnce(&mut Terminal) -> R) -> R {
+        f(&mut self.lock())
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Terminal> {
+        self.inner
+            .lock()
+            .expect("term-core: vt mutex poisoned (a thread panicked mid-update); vt state is unrecoverable")
     }
 }
 
