@@ -485,7 +485,14 @@ impl TermSession {
             .map_err(|e| std::io::Error::other(format!("vt construct failed: {e}")))?;
 
         let (input_tx, input_rx) = channel::<InputMsg>();
-        let _ = INPUT_TX.set(input_tx);
+        // Single session per process in M0: a second spawn would silently
+        // route keystrokes into the first (dead) channel. Assert the invariant
+        // rather than hide it (exit-review finding); multi-session routing is
+        // an M1 `layout` concern.
+        debug_assert!(
+            INPUT_TX.set(input_tx).is_ok(),
+            "TermSession spawned twice — INPUT_TX already routed to an earlier session"
+        );
 
         probe(
             "PTY",
