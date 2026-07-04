@@ -99,9 +99,9 @@ FFI callback ABI verified against the header contract; ConPTY shutdown/wait-recl
 ordering sound; supply-chain pipeline called "unusually rigorous". Minors carried
 forward: (1) single-session `INPUT_TX` invariant — now `debug_assert`ed; (2) the
 shell's spike-local D3D path does not wire term-render's device-removed recovery
-(proven at the term-render layer only) — M1 wiring item; (3) whether the git-pinned
-reactor graph builds green on a clean `windows-latest` runner is unverified until the
-first CI run; (4) orphan-walk PID-recycling caveat is documented spike-grade.
+(proven at the term-render layer only) — M1 wiring item; (3) RESOLVED: the git-pinned reactor graph builds green on a clean `windows-latest`
+runner (PR #1 CI run 28689822588, both jobs pass; one CRLF checkout fix to golden/vendor
+files was needed — see .gitattributes); (4) orphan-walk PID-recycling caveat is documented spike-grade.
 
 ## Remaining evidence checklist (operator)
 
