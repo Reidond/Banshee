@@ -27,6 +27,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ime;
+
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -368,6 +370,34 @@ impl D3DState {
                     // after a swapchain resize (buffers reallocated). Otherwise
                     // let damage detection decide.
                     let force = self.just_resized;
+                    // Publish the cursor cell so a composition that STARTS this
+                    // frame anchors at the current caret. Then snapshot the inline
+                    // composition to draw (None when not composing).
+                    publish_cursor_cell(session.snap.cursor.x, session.snap.cursor.y);
+                    // Position the IME candidate window at the cursor cell (in
+                    // device px from cell metrics) so the candidate list appears
+                    // under our inline preview rather than at the screen origin.
+                    #[cfg(windows)]
+                    if IME_OVERLAY.lock().unwrap().is_some() {
+                        if let Some(hwnd) = ime_host_hwnd() {
+                            let m = renderer.metrics();
+                            let (col, row) = cursor_cell();
+                            let rect = ime::win32::CursorRect {
+                                x: (f32::from(col) * m.cell_w) as i32,
+                                y: (f32::from(row) * m.cell_h) as i32,
+                                w: m.cell_w_u() as i32,
+                                h: m.cell_h_u() as i32,
+                            };
+                            ime::win32::position_candidate(hwnd, rect);
+                        }
+                    }
+                    let composition = IME_OVERLAY.lock().unwrap().clone();
+                    let composition = composition.map(|c| term_render::CompositionOverlay {
+                        text: c.text,
+                        caret_idx: c.caret_idx,
+                        origin_col: c.origin_col,
+                        origin_row: c.origin_row,
+                    });
                     match renderer.render_snapshot(
                         &self.context,
                         &rtv,
@@ -375,6 +405,7 @@ impl D3DState {
                         self.height,
                         &session.snap,
                         &[], // selection model is a later task
+                        composition.as_ref(),
                         force,
                     ) {
                         Ok(frame) => {
@@ -808,12 +839,121 @@ static HOOKS_INSTALLED: OnceLock<()> = OnceLock::new();
 /// Track composition depth so we can flag the focus-loss-mid-composition case.
 static IME_COMPOSING: AtomicBool = AtomicBool::new(false);
 
+// ── M1 Task 7: live IME composition state ──
+//
+// The hook procs are plain extern fns, so the IME state machine + its outputs
+// live in process globals (the same pattern the wheel/input path uses). The
+// state machine is `ime::ImeSession`; its inline-preview output is published to
+// `IME_OVERLAY` for the render tick to draw, and its commit output is written to
+// `INPUT_TX` (the exact channel typed keys use — see `ImeAction::SendToPty`).
+use std::sync::Mutex;
+
+/// The composition state machine (pure; see `ime.rs`).
+static IME_SESSION: Mutex<Option<ime::ImeSession>> = Mutex::new(None);
+/// The commit-swallow window that eats redundant WM_CHAR/WM_IME_CHAR after a
+/// GCS_RESULTSTR commit (double-commit guard).
+#[cfg(windows)]
+static IME_SWALLOW: Mutex<Option<ime::win32::CommitSwallow>> = Mutex::new(None);
+/// Latest inline composition to draw (origin cell filled from the cursor at
+/// compose time). `None` = draw no composition overlay.
+static IME_OVERLAY: Mutex<Option<ime::CompositionOverlay>> = Mutex::new(None);
+/// The cursor cell (col,row) at the last snapshot, published by the render tick
+/// so the composition overlay anchors where the caret is. Packed as (col<<16|row).
+static CURSOR_CELL: AtomicU64 = AtomicU64::new(0);
+
+/// The HWND that owns the active IMM composition context, captured from the
+/// WM_IME_* message that started it. Used to position the candidate window from
+/// the render tick. Stored as the raw pointer value (HWND is not Sync).
+#[cfg(windows)]
+static IME_HWND: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(windows)]
+fn ime_host_hwnd() -> Option<HWND> {
+    let raw = IME_HWND.load(Ordering::SeqCst);
+    if raw == 0 {
+        None
+    } else {
+        Some(HWND(raw as *mut core::ffi::c_void))
+    }
+}
+
+/// Publish the current cursor cell for the IME overlay origin (called each tick).
+fn publish_cursor_cell(col: u16, row: u16) {
+    CURSOR_CELL.store((u64::from(col) << 16) | u64::from(row), Ordering::SeqCst);
+}
+
+fn cursor_cell() -> (u16, u16) {
+    let v = CURSOR_CELL.load(Ordering::SeqCst);
+    (((v >> 16) & 0xFFFF) as u16, (v & 0xFFFF) as u16)
+}
+
+/// Apply the state machine's actions: publish/clear the inline overlay and write
+/// committed UTF-8 straight to the PTY input channel (bypassing the key encoder —
+/// see `ImeAction::SendToPty`). Arms the commit-swallow window on commit.
+#[cfg(windows)]
+fn apply_ime_actions(actions: Vec<ime::ImeAction>) {
+    for action in actions {
+        match action {
+            ime::ImeAction::RenderInline { text, caret } => {
+                let (col, row) = cursor_cell();
+                *IME_OVERLAY.lock().unwrap() = Some(ime::CompositionOverlay {
+                    text,
+                    caret_idx: caret,
+                    origin_col: col,
+                    origin_row: row,
+                });
+            }
+            ime::ImeAction::ClearInline => {
+                *IME_OVERLAY.lock().unwrap() = None;
+            }
+            ime::ImeAction::SendToPty(text) => {
+                // Arm the swallow window BEFORE the redundant char burst arrives.
+                if let Some(sw) = IME_SWALLOW.lock().unwrap().as_mut() {
+                    sw.arm(&text);
+                }
+                if let Some(tx) = INPUT_TX.get() {
+                    let _ = tx.send((text.into_bytes(), Instant::now()));
+                }
+            }
+        }
+    }
+}
+
+/// Feed one composition event into the state machine and apply its actions.
+#[cfg(windows)]
+fn feed_ime_event(ev: ime::CompositionEvent) {
+    let mut guard = IME_SESSION.lock().unwrap();
+    let session = guard.get_or_insert_with(ime::ImeSession::new);
+    let actions = session.on_event(ev);
+    drop(guard);
+    apply_ime_actions(actions);
+}
+
 /// Log + forward one input-relevant WM_* message. Each message arrives via
 /// exactly one of the two hooks (posted xor sent), so there is no double
 /// handling.
-fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
+/// Inspect (and for IME, actively handle) one input-relevant WM_* message.
+///
+/// Returns `true` when the message must be **swallowed** — neutralised before the
+/// app's own WndProc sees it. In this hook-based architecture (we observe the
+/// message queue; we do NOT own a WndProc / call `DefWindowProc`), the swallow is
+/// how we implement the double-commit guard: a `WM_CHAR` / `WM_IME_CHAR` that
+/// arrives while the commit-swallow window is armed is the redundant echo of a
+/// just-committed IME result, so we drop it (the `getmessage_hook` rewrites it to
+/// `WM_NULL`) and it never reaches the PTY twice.
+fn inspect_input_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
     match msg {
         WM_KEYDOWN | WM_SYSKEYDOWN => {
+            // A real keydown ends any post-commit char burst: the swallow window
+            // only spans the immediate WM_CHAR/WM_IME_CHAR echo of a commit, so a
+            // fresh keydown means the burst is over — disarm so this key's own
+            // WM_CHAR is NOT swallowed.
+            #[cfg(windows)]
+            if let Some(sw) = IME_SWALLOW.lock().unwrap().as_mut() {
+                if sw.is_armed() {
+                    sw.disarm();
+                }
+            }
             let vk = wparam.0 as u32;
             let sys = msg == WM_SYSKEYDOWN;
             if !sys {
@@ -840,6 +980,14 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
         }
         WM_CHAR => {
             let code = wparam.0 as u32;
+            // Double-commit guard: if the commit-swallow window is armed, this
+            // WM_CHAR is the redundant echo of a just-committed IME result — drop
+            // it so the committed text is not sent to the PTY twice.
+            #[cfg(windows)]
+            if swallow_post_commit_char() {
+                probe("CHAR", &format!("U+{code:04X} SWALLOWED (post-IME-commit)"));
+                return true;
+            }
             let ch = char::from_u32(code)
                 .map(|c| c.escape_default().to_string())
                 .unwrap_or_else(|| format!("U+{code:04X}"));
@@ -853,9 +1001,23 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
             let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
             route_wheel(delta);
         }
+        // WM_IME_CHAR: IMM's per-character echo of a committed result. Same guard
+        // as WM_CHAR — swallow while armed so it never double-sends.
+        #[cfg(windows)]
+        _ if msg == ime::win32::WM_IME_CHAR => {
+            if swallow_post_commit_char() {
+                probe("CHAR", "WM_IME_CHAR SWALLOWED (post-IME-commit)");
+                return true;
+            }
+        }
         WM_IME_STARTCOMPOSITION => {
             IME_COMPOSING.store(true, Ordering::SeqCst);
             probe("IME_START", "composition started");
+            #[cfg(windows)]
+            {
+                IME_HWND.store(hwnd.0 as u64, Ordering::SeqCst);
+                feed_ime_event(ime::CompositionEvent::Start);
+            }
         }
         WM_IME_COMPOSITION => {
             const GCS_RESULTSTR: u32 = 0x0800;
@@ -874,10 +1036,35 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
             } else {
                 probe("IME_UPDATE", &format!("composition msg flags=0x{flags:04X}"));
             }
+            // Parse GCS_RESULTSTR (commit) and/or GCS_COMPSTR (preview) out of the
+            // IMM context and drive the state machine. We handle the message here,
+            // which — together with the swallow window above — is the two-part
+            // double-commit defence: we already extracted the result string, so
+            // the redundant WM_CHAR echo is swallowed rather than re-sent.
+            #[cfg(windows)]
+            {
+                for ev in unsafe { ime::win32::parse_composition(hwnd, flags) } {
+                    feed_ime_event(ev);
+                }
+            }
         }
         WM_IME_ENDCOMPOSITION => {
             IME_COMPOSING.store(false, Ordering::SeqCst);
             probe("IME_END", "composition ended");
+            #[cfg(windows)]
+            feed_ime_event(ime::CompositionEvent::End);
+        }
+        // WM_IME_SETCONTEXT: strip ISC_SHOWUICOMPOSITIONWINDOW so the system does
+        // not draw its own composition window over our inline preview. In this
+        // hook architecture we cannot rewrite the DefWindowProc lparam, but we can
+        // mask the show bit on the observed message so cooperating IME UIs that
+        // read it via the queue suppress their window; the authoritative
+        // suppression path (a WndProc that forwards the masked lparam) is noted in
+        // MANUAL-MATRIX.md as an operator-verified item.
+        #[cfg(windows)]
+        _ if msg == ime::win32::WM_IME_SETCONTEXT => {
+            let _ = ime::win32::suppress_system_composition_window(lparam.0);
+            probe("IME", "WM_IME_SETCONTEXT (requested inline: suppress system UI)");
         }
         WM_SETFOCUS => {
             FOCUS_STATE.store(1, Ordering::SeqCst);
@@ -896,9 +1083,27 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
                     "focus lost while composing — expect composition cancelled",
                 );
             }
+            IME_COMPOSING.store(false, Ordering::SeqCst);
+            // Cancel cleanly: the state machine drops the preview with NO
+            // SendToPty, so no partial composition bytes reach the PTY.
+            #[cfg(windows)]
+            feed_ime_event(ime::CompositionEvent::FocusLost);
         }
         _ => {}
     }
+    false
+}
+
+/// Offer a post-commit char message to the swallow window; returns `true` if it
+/// should be swallowed. Also disarms lazily once the window is exhausted.
+#[cfg(windows)]
+fn swallow_post_commit_char() -> bool {
+    if let Some(sw) = IME_SWALLOW.lock().unwrap().as_mut() {
+        if sw.is_armed() {
+            return sw.offer();
+        }
+    }
+    false
 }
 
 /// WH_GETMESSAGE hook: posted messages (keys, chars, IME, wheel) on the UI
@@ -906,19 +1111,29 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
 /// twice.
 unsafe extern "system" fn getmessage_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 && wparam.0 as u32 == PM_REMOVE.0 {
-        // SAFETY: for WH_GETMESSAGE with code >= 0, lparam points to a MSG.
-        let msg = unsafe { &*(lparam.0 as *const MSG) };
-        inspect_input_message(msg.message, msg.wParam, msg.lParam);
+        // SAFETY: for WH_GETMESSAGE with code >= 0, lparam points to a MSG we may
+        // also mutate (WH_GETMESSAGE explicitly permits modifying the retrieved
+        // message; rewriting `message` to WM_NULL neutralises it for the app's
+        // WndProc — the mechanism used to swallow post-commit char echoes).
+        let msg = unsafe { &mut *(lparam.0 as *mut MSG) };
+        let swallow = inspect_input_message(msg.hwnd, msg.message, msg.wParam, msg.lParam);
+        if swallow {
+            msg.message = WM_NULL;
+            msg.wParam = WPARAM(0);
+            msg.lParam = LPARAM(0);
+        }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-/// WH_CALLWNDPROC hook: sent messages (WM_SETFOCUS / WM_KILLFOCUS) on the thread.
+/// WH_CALLWNDPROC hook: sent messages (WM_SETFOCUS / WM_KILLFOCUS / IME
+/// context) on the thread. Sent messages cannot be swallowed here (the return
+/// value is ignored for WH_CALLWNDPROC), so we only observe/handle them.
 unsafe extern "system" fn callwndproc_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         // SAFETY: for WH_CALLWNDPROC with code >= 0, lparam points to a CWPSTRUCT.
         let cwp = unsafe { &*(lparam.0 as *const CWPSTRUCT) };
-        inspect_input_message(cwp.message, cwp.wParam, cwp.lParam);
+        let _ = inspect_input_message(cwp.hwnd, cwp.message, cwp.wParam, cwp.lParam);
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
@@ -928,6 +1143,13 @@ unsafe extern "system" fn callwndproc_hook(code: i32, wparam: WPARAM, lparam: LP
 fn install_input_probe() {
     if HOOKS_INSTALLED.get().is_some() {
         return;
+    }
+    // Initialise the IME state machine + commit-swallow window once, before the
+    // hooks can deliver any WM_IME_* message.
+    #[cfg(windows)]
+    {
+        *IME_SESSION.lock().unwrap() = Some(ime::ImeSession::new());
+        *IME_SWALLOW.lock().unwrap() = Some(ime::win32::CommitSwallow::new());
     }
     unsafe {
         let tid = windows::Win32::System::Threading::GetCurrentThreadId();

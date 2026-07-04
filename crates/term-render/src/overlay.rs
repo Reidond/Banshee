@@ -30,6 +30,46 @@ pub struct RowRange {
     pub col_end: u16, // exclusive
 }
 
+/// An inline IME composition preview to draw at the cursor cell (M1 Task 7).
+///
+/// The renderer shapes `text` like ordinary cells starting at `(origin_col,
+/// origin_row)` and draws a distinct underline beneath the whole span so the
+/// user sees the in-flight (uncommitted) composition. `caret_idx` is the caret
+/// position in `char`s within `text` (currently informational — a caret bar is
+/// out of v1 scope; the underline is the composition affordance the requirement
+/// asks for).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompositionOverlay {
+    pub text: String,
+    pub caret_idx: usize,
+    pub origin_col: u16,
+    pub origin_row: u16,
+}
+
+/// The underline beneath an inline composition span, as a solid rect. `cols` is
+/// the number of cells the composition text occupies (wide chars count as 2).
+/// The underline sits a touch below the glyph baseline and is thicker than a
+/// normal text underline so the composition reads as distinct.
+#[must_use]
+pub fn composition_underline_rect(
+    m: &CellMetrics,
+    origin_col: u16,
+    origin_row: u16,
+    cols: u16,
+    color: [f32; 4],
+) -> SolidRect {
+    let (x, y_top) = cell_origin(m, origin_col, origin_row);
+    let thick = (m.px_size * 0.10).clamp(1.0, 3.0);
+    let underline_y = (y_top + m.cell_h - thick).max(y_top);
+    SolidRect {
+        x,
+        y: underline_y,
+        w: f32::from(cols) * m.cell_w,
+        h: thick,
+        color,
+    }
+}
+
 /// Pixel origin (top-left) of cell (`col`,`row`).
 #[inline]
 fn cell_origin(m: &CellMetrics, col: u16, row: u16) -> (f32, f32) {
@@ -180,6 +220,20 @@ mod tests {
             kind: DecorationKind::UnderlineDouble,
         };
         assert_eq!(decoration_rects(&m(), &d).len(), 2);
+    }
+
+    #[test]
+    fn composition_underline_spans_and_sits_low() {
+        let m = m();
+        let r = composition_underline_rect(&m, 4, 2, 3, [1.0; 4]);
+        // Starts at the origin cell.
+        assert_eq!(r.x, 40.0); // col 4 * cell_w 10
+        // Spans 3 cells wide.
+        assert_eq!(r.w, 30.0);
+        // Sits near the bottom of row 2 (y in [40, 40+cell_h]).
+        assert!(r.y >= 40.0 && r.y < 60.0);
+        // Thicker than a hairline.
+        assert!(r.h >= 1.0);
     }
 
     #[test]

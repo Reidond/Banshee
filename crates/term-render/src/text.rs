@@ -388,6 +388,36 @@ pub struct FrameLayout {
     pub dirty: bool,
 }
 
+/// Cell width (1 or 2) for a composition-preview char. The `GridSnapshot` path
+/// gets width straight from the vt; the composition string is not in the vt, so
+/// approximate East-Asian-wide + emoji ranges here. Good enough for the inline
+/// preview underline span; the committed text is re-measured by the vt once it
+/// echoes.
+#[must_use]
+fn char_cells(ch: char) -> u16 {
+    let c = ch as u32;
+    let wide = matches!(c,
+        0x1100..=0x115F |   // Hangul Jamo
+        0x2E80..=0x303E |   // CJK radicals, Kangxi
+        0x3041..=0x33FF |   // Hiragana, Katakana, CJK symbols
+        0x3400..=0x4DBF |   // CJK Ext A
+        0x4E00..=0x9FFF |   // CJK Unified
+        0xA000..=0xA4CF |   // Yi
+        0xAC00..=0xD7A3 |   // Hangul syllables
+        0xF900..=0xFAFF |   // CJK compat ideographs
+        0xFE30..=0xFE4F |   // CJK compat forms
+        0xFF00..=0xFF60 |   // Fullwidth forms
+        0xFFE0..=0xFFE6 |   // Fullwidth signs
+        0x1F300..=0x1FAFF | // emoji / pictographs
+        0x20000..=0x3FFFD   // CJK Ext B+ (astral)
+    );
+    if wide {
+        2
+    } else {
+        1
+    }
+}
+
 /// The default terminal palette entries we need for None/Palette colors.
 /// Straight sRGB-ish; good enough for M1 (theme integration is later).
 fn palette_rgb(idx: u8) -> [u8; 3] {
@@ -449,7 +479,7 @@ fn color_to_rgba(c: StyleColor, default: [f32; 4]) -> [f32; 4] {
 }
 
 /// Default terminal fg/bg (light-on-dark).
-const DEFAULT_FG: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
+pub const DEFAULT_FG: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
 const DEFAULT_BG: [f32; 4] = [0.02, 0.02, 0.04, 1.0];
 /// The RTV clear color the cell renderer uses (== default background).
 pub const DEFAULT_BG_CLEAR: [f32; 4] = DEFAULT_BG;
@@ -600,6 +630,44 @@ impl TextEngine {
         }
 
         Ok(layout)
+    }
+
+    /// Shape a plain string into grid-snapped [`PlacedGlyph`]s starting at cell
+    /// `(origin_col, origin_row)`, advancing one cell per narrow char and two per
+    /// wide char (M1 Task 7 — inline IME composition preview). The string is not
+    /// part of any `GridSnapshot`; this is the composition-overlay shaping path.
+    ///
+    /// Returns the placed glyphs plus the total column span consumed (so the
+    /// caller can size the composition underline).
+    pub fn shape_string(
+        &mut self,
+        text: &str,
+        origin_col: u16,
+        origin_row: u16,
+        color: [f32; 4],
+    ) -> Result<(Vec<PlacedGlyph>, u16)> {
+        let base = self.stack.resolve_face(false, false)?;
+        let mut glyphs = Vec::new();
+        let mut col = origin_col;
+        for ch in text.chars() {
+            let cp = ch as u32;
+            let wide = char_cells(ch) == 2;
+            if cp != 0 && ch != ' ' {
+                let face = self.stack.face_for_codepoint(base, cp, false, false);
+                if let Some(gid) = self.shape_one(face, cp) {
+                    glyphs.push(PlacedGlyph {
+                        face,
+                        glyph_id: gid,
+                        col,
+                        row: origin_row,
+                        color,
+                        wide,
+                    });
+                }
+            }
+            col = col.saturating_add(if wide { 2 } else { 1 });
+        }
+        Ok((glyphs, col.saturating_sub(origin_col)))
     }
 
     /// Shape a single codepoint on `face`, returning its glyph id (grid-snapped:

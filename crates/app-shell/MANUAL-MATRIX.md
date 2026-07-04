@@ -187,3 +187,176 @@ grep -E '\[PROBE (KEY|CHAR|IME_|FOCUS)\]' probe.log > d2-input-evidence.txt
 
 Each scenario's pass/fail is decided by the greps above; paste the grep output
 under the "Keyboard focus + TSF" criterion of the D2 decision table.
+
+---
+
+# M1 IME composition matrix (Task 7 — design risk R3)
+
+The M0 matrix above only *observed* `WM_IME_*` at the log level. **M1 Task 7
+integrates** it: `crates/app-shell/src/ime.rs` drives an `ImeSession` state
+machine off parsed composition events, renders the in-flight composition inline
+at the cursor with a distinct underline (`term-render` composition overlay pass),
+and commits UTF-8 straight to the PTY exactly once.
+
+## Why this is still a manual matrix (read first)
+
+TSF automation is unreliable and there is **no TSF-enabled surface** in the
+reactor XAML tree (the M0 re-baseline confirmed the keyboard/char/focus/IME slots
+are vtable stubs). So M1 rides the **IMM32 composition-message path** on the host
+`HWND`: `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` (with `GCS_COMPSTR` for
+the preview and `GCS_RESULTSTR` for the commit) / `WM_IME_ENDCOMPOSITION`, plus
+`WM_IME_SETCONTEXT` handling to request suppression of the system composition
+window. IMM32 rides on top of TSF for every shipping Win11 IME, so this is the
+standard fallback for exactly this "no cooperating text store" situation. The
+composition **state machine** (`ImeSession`) is unit-tested headlessly
+(`cargo test -p app-shell`); this matrix covers the parts only a human at a real
+IME can verify: correct inline rendering, single commit, layout switching, emoji
+picker, and clean focus-loss cancel.
+
+### Architecture the operator is verifying
+
+- **Message path:** the M0 thread-scoped hooks (`WH_GETMESSAGE` + `WH_CALLWNDPROC`
+  on the UI thread) now *handle* IME messages, not just log them. `WM_IME_*` →
+  `ime::win32::parse_composition` (reads `ImmGetCompositionStringW`) →
+  `CompositionEvent` → `ImeSession` → `ImeAction`.
+- **Inline render:** `RenderInline` publishes a `CompositionOverlay` (preview text
+  + caret + cursor origin cell) that the render tick threads into
+  `CellRenderer::render_snapshot(.., composition, ..)`; the renderer draws a bg
+  mask + the composition glyphs + a distinct thicker underline over the cursor
+  cell.
+- **Commit path:** `SendToPty(text)` writes the committed UTF-8 **directly** to
+  `INPUT_TX` (the same channel typed keys feed), bypassing the key encoder — a
+  commit is not a "key" and no encoding mode may transform it.
+- **Double-commit guard (two parts):** (1) the hook *handles*
+  `WM_IME_COMPOSITION` and does not pass it to `DefWindowProc`, so most IMEs do
+  not synthesise the redundant char echo; (2) belt-and-braces, a **commit-swallow
+  window** is armed on commit (`CommitSwallow`, one slot per committed code
+  point), and while armed the `getmessage_hook` rewrites the redundant
+  `WM_CHAR` / `WM_IME_CHAR` to `WM_NULL` so committed text never reaches the PTY
+  twice. A real keydown disarms the window.
+- **Surrogate pairs:** UTF-16 composition strings are converted with
+  `from_utf16_lossy` and the caret is mapped from UTF-16 units to a `char` index;
+  the code never assumes UTF-16 unit count == char count (emoji, astral CJK).
+
+### Recorded-run columns
+
+Fill in **Observed** / **Date & build** at run time. Build id: paste the first
+`[BANSHEE-M1]` startup line and the `git rev-parse --short HEAD`.
+
+## Scenario M1-IME-1 — JA romaji → kanji commits once, rendered inline
+
+**Setup:** enable the Japanese IME (Hiragana input). Focus the window; ensure a
+pwsh prompt is visible.
+**Steps:**
+1. Type `nihongo`.
+2. Press Space to convert to candidates; pick 日本語.
+3. Press Enter to commit.
+
+**Expected:**
+- During typing: the composition (にほんご → 日本語) renders **inline at the
+  cursor with an underline** (not in a floating box at screen origin). Logs show
+  `IME_START` then repeated `IME_UPDATE (GCS flags=0x0008)`.
+- On commit: exactly **one** `IME_COMMIT (GCS flags=0x0800)`; `日本語` appears at
+  the prompt exactly once; **no** duplicate characters.
+- Grep: `grep -E '\[PROBE IME_' probe.log` shows one `IME_COMMIT` per commit;
+  `grep 'SWALLOWED' probe.log` may show swallowed post-commit chars (guard fired)
+  or nothing (IME did not re-echo) — both are pass.
+
+**Observed:** _______   **Date & build:** _______
+
+## Scenario M1-IME-2 — ZH pinyin composition
+
+**Setup:** enable Chinese (Simplified) Pinyin IME. Focus the window.
+**Steps:**
+1. Type `nihao`.
+2. Select 你好 from candidates; commit.
+
+**Expected:** inline underlined preview during composition; single `IME_COMMIT`;
+你好 (two wide cells each) at the prompt exactly once. Wide-cell span of the
+inline preview underline covers 4 columns.
+
+**Observed:** _______   **Date & build:** _______
+
+## Scenario M1-IME-3 — UA/RU layout switch mid-line drops/duplicates nothing
+
+**Setup:** add a Cyrillic layout (Ukrainian or Russian) alongside the Latin one.
+Focus the window.
+**Steps:**
+1. Type `hello ` (Latin) at the prompt — do NOT press Enter.
+2. Switch layout (Win+Space or Alt+Shift) to Cyrillic.
+3. Continue typing `привіт`.
+
+**Expected:** the line reads `hello привіт` with **no dropped and no duplicated**
+characters at the switch boundary. (Direct-keyboard Cyrillic arrives via
+`WM_CHAR`, not composition; the check is that the switch does not corrupt the
+byte stream — the encoder path and the IME path do not interfere.)
+
+**Observed:** _______   **Date & build:** _______
+
+## Scenario M1-IME-4 — Emoji picker (Win+.) arrives as one UTF-8 sequence
+
+**Setup:** focus the window at a pwsh prompt.
+**Steps:**
+1. Press **Win+.** to open the emoji picker.
+2. Pick an emoji that is a surrogate pair (e.g. 🎉 or 😀) and, ideally, one that
+   is a ZWJ sequence (e.g. 👨‍💻) to stress multi-scalar commits.
+3. Confirm.
+
+**Expected:** the emoji reaches the prompt as a **single UTF-8 sequence** (one
+insert, correct glyph — not two tofu boxes, not a doubled emoji). Win+. commits
+via the same IMM path, so `IME_COMMIT` fires once; the swallow guard prevents any
+`WM_CHAR` surrogate-half re-echo. Verify the byte count downstream matches the
+emoji's UTF-8 length (no truncated surrogate).
+
+**Observed:** _______   **Date & build:** _______
+
+## Scenario M1-IME-5 — Focus loss mid-composition cancels cleanly, no partial bytes
+
+**Setup:** JA (or ZH) IME active; focus the window.
+**Steps:**
+1. Start a composition (type a reading) but do **not** commit — leave candidates
+   open.
+2. Click another window / Alt+Tab away.
+
+**Expected:**
+- Logs: `FOCUS lost (WM_KILLFOCUS) mid_composition=true` followed by `IME_CANCEL`
+  and (from the IME) `IME_END`.
+- The inline composition preview **disappears** (ClearInline).
+- **No partial composition bytes reach the PTY** — the prompt shows nothing from
+  the abandoned reading; the state machine emits no `SendToPty` on `FocusLost`
+  (verified by the `focus_loss_cancels_no_send` unit test; confirm at the prompt
+  that no stray characters were inserted).
+- Re-focus and type: fresh `IME_START` with no residual/orphan `IME_UPDATE`.
+
+**Observed:** _______   **Date & build:** _______
+
+## Scenario M1-IME-6 — PSReadLine interaction (no clean-echo assumption)
+
+**Setup:** run the operator's **real** pwsh profile (with PSReadLine loaded — NOT
+`-NoProfile`). Focus the window.
+**Steps:**
+1. With a JA/ZH IME, compose and commit text into the middle of an existing
+   command line (e.g. after typing `git commit -m "`, compose Japanese, then
+   continue).
+2. Use Left/Right arrows and Home/End around the committed IME text.
+
+**Expected:** committed IME text integrates with PSReadLine's redraw — real
+profiles **interleave SGR / cursor-move / line-redraw sequences with echo**, so
+the committed bytes must survive PSReadLine reprinting the line. No duplicated
+IME text after a redraw; no composition-underline artifact left behind after
+commit (the overlay clears on `IME_END`). This is the scenario the spike's
+`-NoProfile` echo self-test cannot cover — the input path must not assume the
+shell echoes committed text back on a clean, un-decorated line.
+
+**Observed:** _______   **Date & build:** _______
+
+## Recording into the memo
+
+```bash
+grep -E '\[PROBE (IME_|FOCUS|CHAR)\]|SWALLOWED' probe.log > m1-ime-evidence.txt
+```
+
+Paste under the IME criterion of the M1 exit checklist. The state-machine half is
+covered green by `cargo test -p app-shell` (12 tests incl. commit-once,
+focus-cancel-no-send, surrogate round-trip, commit-swallow window); this matrix
+records the human-driven half.

@@ -29,6 +29,7 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Exit criteria**: full golden matrix green (Kitty spec + Windows set); IME scenario list from requirements passes manually (JA/ZH, UA/RU switch, Win+., focus-loss cancel)
 - **Quality gate**: Standard
 - **Tasks**: 5, 6, 7
+- **Status**: ✅ Code-exited 2026-07-04 (68-case matrix + mouse/paste + IME state machine all green). **Manual IME runs (M1-IME-1..6) pending operator** — tracked for milestone exit, not blocking Phase 3 entry.
 
 ### Phase 3: Sessions, profiles, config
 
@@ -121,10 +122,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Phase 1
 - **Files to modify**: `crates/app-shell/src/ime.rs`, `crates/term-render/src/overlay.rs` (inline composition)
 - **Acceptance criteria**:
-  - [ ] Composition rendered inline at cursor with underline; commit → UTF-8 → encoder exactly once
-  - [ ] Requirements IME scenarios pass: JA/ZH commit, UA/RU mid-line switch, emoji picker, focus-loss cancel
+  - [x] Composition rendered inline at cursor with underline (5th render pass, atlas-reusing); commit → UTF-8 → PTY exactly once (WM_NULL rewrite swallow + code-point-counted CommitSwallow window; IME commits bypass the key encoder by design — no key, no mode transform)
+  - [~] Requirements IME scenarios: state-machine walks unit-tested (12 green incl. surrogate pairs, focus-loss cancel); **live JA/ZH/UA-RU/Win+./focus-loss runs are OPERATOR items** — checklist M1-IME-1..6 in crates/app-shell/MANUAL-MATRIX.md
 - **Test requirements**: manual matrix with recorded results (TSF automation is unreliable); regression checklist kept in-repo
-- **Status**: [ ] Not started
+- **Status**: [x] Code done (2026-07-04); manual matrix pending operator
 
 ### Task 8: Config v0 (TOML, hot reload, diagnostics)
 
@@ -143,10 +144,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Task 8
 - **Files to modify**: `crates/layout/src/profile.rs`, `crates/config/src/schema.rs`
 - **Acceptance criteria**:
-  - [ ] Built-in defaults (pwsh, Windows PowerShell, cmd) always present; user profiles from config override/extend
-  - [ ] Profile fields per FR-13 schema (icon/color/env/cwd/type/overrides)
-- **Test requirements**: unit tests incl. override precedence
-- **Status**: [ ] Not started
+  - [x] Built-in defaults (pwsh, Windows PowerShell, cmd) always present; user profiles override by name — **whole-profile replacement** (parsed config can't distinguish unset from default; documented in rustdoc + config reference)
+  - [x] Profile fields per FR-13; `default = true` key added to schema + docs; `LaunchSpec` + WSL `--cd` composition ready for T10/T11
+- **Test requirements**: unit tests incl. override precedence — 15 layout tests green (orchestrator-verified)
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 10: WSL discovery, launch, health
 

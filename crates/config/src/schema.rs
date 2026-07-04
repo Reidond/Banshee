@@ -243,6 +243,12 @@ pub struct Profile {
     pub color: Option<Rgb>,
     pub font_size: Option<f32>,
     pub theme: Option<String>,
+
+    /// Marks this profile as the default (selected first / on new-tab with
+    /// no explicit profile). At most conceptually one profile should set
+    /// this; if multiple do, the first in declaration order wins (see
+    /// `layout::ProfileSet::default_profile`, M1 Task 9).
+    pub default: bool,
 }
 
 // ---- raw (pre-validation) serde model -------------------------------------
@@ -291,6 +297,8 @@ struct RawProfile {
     #[serde(rename = "font-size")]
     font_size: Option<f32>,
     theme: Option<String>,
+    #[serde(default)]
+    default: bool,
 }
 
 /// Parse + validate a TOML source string into a fully-resolved [`Config`].
@@ -373,6 +381,7 @@ fn collect_unknown_keys(table: &toml::Table, warnings: &mut Vec<Diagnostic>) {
     ];
     const PROFILE_KEYS: &[&str] = &[
         "name", "command", "args", "cwd", "env", "type", "icon", "color", "font-size", "theme",
+        "default",
     ];
 
     for key in table.keys() {
@@ -615,6 +624,7 @@ fn resolve_profile(raw: RawProfile) -> Result<Profile, Vec<Diagnostic>> {
         color,
         font_size,
         theme: raw.theme,
+        default: raw.default,
     })
 }
 

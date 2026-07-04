@@ -30,6 +30,6 @@ pub use device::{Device, DriverPreference};
 pub use grid::{CellRenderer, Frame};
 pub use grid_spike::GridRenderer;
 pub use offscreen::OffscreenTarget;
-pub use overlay::{RowRange, SolidRect};
+pub use overlay::{CompositionOverlay, RowRange, SolidRect};
 pub use swapchain::CompositionSwapchain;
 pub use text::{CellMetrics, FontStack, TextEngine};

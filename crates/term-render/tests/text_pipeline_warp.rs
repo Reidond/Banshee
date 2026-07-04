@@ -80,7 +80,7 @@ fn render(snap: &GridSnapshot) -> Rendered {
     let target = OffscreenTarget::new(&device, w, h).expect("offscreen");
 
     let frame = renderer
-        .render_snapshot(&device.context, &target.rtv, w, h, snap, &[], true)
+        .render_snapshot(&device.context, &target.rtv, w, h, snap, &[], None, true)
         .expect("render");
     assert!(frame.is_dirty(), "forced first frame must be dirty");
 
@@ -230,12 +230,12 @@ fn clean_frame_skips_when_unchanged() {
     let target = OffscreenTarget::new(&device, w, h).expect("offscreen");
 
     let f1 = renderer
-        .render_snapshot(&device.context, &target.rtv, w, h, &snap, &[], true)
+        .render_snapshot(&device.context, &target.rtv, w, h, &snap, &[], None, true)
         .expect("render 1");
     assert!(f1.is_dirty());
 
     let f2 = renderer
-        .render_snapshot(&device.context, &target.rtv, w, h, &snap, &[], false)
+        .render_snapshot(&device.context, &target.rtv, w, h, &snap, &[], None, false)
         .expect("render 2");
     assert!(
         !f2.is_dirty(),

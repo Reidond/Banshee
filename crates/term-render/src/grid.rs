@@ -38,7 +38,10 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use term_core::GridSnapshot;
 
 use crate::atlas::{GlyphAtlas, GlyphKey};
-use crate::overlay::{cursor_rects, decoration_rects, selection_rect, RowRange, SolidRect};
+use crate::overlay::{
+    composition_underline_rect, cursor_rects, decoration_rects, selection_rect, CompositionOverlay,
+    RowRange, SolidRect,
+};
 use crate::text::{CellMetrics, TextEngine};
 
 /// A solid-color instance: pixel rect + RGBA.
@@ -125,6 +128,11 @@ pub struct CellRenderer {
     screen_cb: ID3D11Buffer,
     sampler: ID3D11SamplerState,
     blend: ID3D11BlendState,
+
+    /// Last-drawn inline composition, so a composition change forces a present
+    /// even when the vt snapshot is otherwise clean (M1 Task 7). `None` when no
+    /// composition is active.
+    last_composition: Option<CompositionOverlay>,
 }
 
 // SAFETY: all D3D/DWrite state is used only from the render thread.
@@ -179,6 +187,7 @@ impl CellRenderer {
             screen_cb,
             sampler,
             blend,
+            last_composition: None,
         })
     }
 
@@ -211,9 +220,19 @@ impl CellRenderer {
         height: u32,
         snapshot: &GridSnapshot,
         selection: &[RowRange],
+        composition: Option<&CompositionOverlay>,
         force: bool,
     ) -> Result<Frame> {
-        let layout = self.text.shape_snapshot(snapshot, force)?;
+        // A composition change must force a redraw even when the vt snapshot is
+        // otherwise clean — the inline preview is not part of the snapshot, so
+        // shape_snapshot's damage hash would skip the frame and the preview would
+        // never appear (or never clear).
+        let composition_changed = composition != self.last_composition.as_ref();
+        if composition_changed {
+            self.last_composition = composition.cloned();
+        }
+
+        let layout = self.text.shape_snapshot(snapshot, force || composition_changed)?;
         if !layout.dirty {
             return Ok(Frame { dirty: false });
         }
@@ -282,6 +301,67 @@ impl CellRenderer {
             }
         }
 
+        // ── Inline IME composition overlay (M1 Task 7) ──
+        // Drawn above everything: a solid bg mask over the composition cells (so
+        // the underlying prompt text does not show through the in-flight
+        // preview), then the composition glyphs, then a distinct underline.
+        let mut comp_bg: Vec<SolidInstance> = Vec::new();
+        let mut comp_glyphs: Vec<GlyphInstance> = Vec::new();
+        let mut comp_deco: Vec<SolidInstance> = Vec::new();
+        if let Some(comp) = composition {
+            if !comp.text.is_empty() {
+                let (placed, span_cols) = self.text.shape_string(
+                    &comp.text,
+                    comp.origin_col,
+                    comp.origin_row,
+                    crate::text::DEFAULT_FG,
+                )?;
+                // Mask the span with the default background so committed prompt
+                // text underneath the preview does not bleed through.
+                let (mx, my) = (
+                    f32::from(comp.origin_col) * metrics.cell_w,
+                    f32::from(comp.origin_row) * metrics.cell_h,
+                );
+                comp_bg.push(SolidInstance {
+                    rect: [mx, my, f32::from(span_cols) * metrics.cell_w, metrics.cell_h],
+                    color: crate::text::DEFAULT_BG_CLEAR,
+                });
+                // Composition glyphs (reuse the atlas machinery).
+                let px_q = metrics.px_size.round() as u16;
+                for g in &placed {
+                    let key = GlyphKey {
+                        face: g.face,
+                        glyph_id: g.glyph_id,
+                        px_q,
+                    };
+                    let entry =
+                        self.atlas
+                            .get_or_insert(self.text.stack(), key, metrics.px_size, context)?;
+                    let Some(entry) = entry else { continue };
+                    let (cx, cy) = (
+                        f32::from(g.col) * metrics.cell_w,
+                        f32::from(g.row) * metrics.cell_h,
+                    );
+                    let x = cx + entry.bearing_x as f32;
+                    let y = cy + metrics.baseline + entry.bearing_y as f32;
+                    comp_glyphs.push(GlyphInstance {
+                        rect: [x, y, entry.w as f32, entry.h as f32],
+                        uv: entry.uv,
+                        color: g.color,
+                    });
+                }
+                // Distinct composition underline beneath the whole span.
+                let ul = composition_underline_rect(
+                    &metrics,
+                    comp.origin_col,
+                    comp.origin_row,
+                    span_cols,
+                    crate::text::DEFAULT_FG,
+                );
+                comp_deco.push(solid_from_rect(&ul));
+            }
+        }
+
         // ── Draw ──
         self.update_screen_cb(context, width, height)?;
         // SAFETY: all interfaces live; buffers sized/strided consistently.
@@ -311,6 +391,10 @@ impl CellRenderer {
         self.draw_solids(context, &decos)?;
         // Pass 4: cursor.
         self.draw_solids(context, &cursor_solids)?;
+        // Pass 5: inline IME composition (bg mask → glyphs → underline), on top.
+        self.draw_solids(context, &comp_bg)?;
+        self.draw_glyphs(context, &comp_glyphs)?;
+        self.draw_solids(context, &comp_deco)?;
 
         Ok(Frame { dirty: true })
     }

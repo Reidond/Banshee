@@ -137,8 +137,18 @@ clipboard-write-max-bytes = 2000000
 `[[profile]]` is an array of tables, each describing a launchable session
 type (a shell configuration Banshee can open a pane with). This crate
 defines and validates the schema shape; consuming it into an actual runnable
-profile list (with built-in defaults layered underneath) is the profile
-task's job (M1 Task 9).
+profile list (with built-in defaults layered underneath) is the `layout`
+crate's job (M1 Task 9, see `layout::profile`).
+
+Built-in profiles (`pwsh`, `Windows PowerShell`, `cmd`) always exist even
+with no config file. A user `[[profile]]` entry whose `name` matches a
+built-in (or an auto-discovered profile from a later source, e.g. WSL
+distro detection in M1 Task 10) **replaces that profile wholesale** —
+override is whole-profile, not field-by-field, because this crate's
+`Profile` model has already resolved every field to a concrete value by
+the time `layout` sees it, so there is no reliable way to tell "user left
+this field unset" apart from "user explicitly set it to the default
+value." See `layout::profile` rustdoc for the full merge algorithm.
 
 | Key | Type | Required | Description |
 |---|---|---|---|
@@ -152,6 +162,7 @@ task's job (M1 Task 9).
 | `color` | string (`#rrggbb`) | no | Optional accent color override for this profile. |
 | `font-size` | float | no | Optional per-profile font size override; same `4.0..=128.0` bounds as the top-level `font-size`. |
 | `theme` | string | no | Optional per-profile theme name override (theme resolution is out of scope for config v0). |
+| `default` | boolean | no (default `false`) | Marks this profile as the default (selected first). If multiple profiles set this, the first in declaration order wins; see `layout::ProfileSet::default_profile` (M1 Task 9). |
 
 ```toml
 [[profile]]
