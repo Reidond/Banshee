@@ -78,3 +78,21 @@ to its home above and removed here.
 - **Finding**: The HWND-subclass path (FindWindowW by title + SetWindowSubclass, WM_KEY*/WM_CHAR/WM_IME_*) is not a workaround but the permanent input architecture under Tier A; M1's `ime.rs` builds on it directly.
 - **Impact**: Never plan input features against Reactor callbacks; extend the subclass/message path. Re-check on every reactor rev bump whether the stubs became real (then re-evaluate).
 - **Category**: pattern
+
+### [2026-07-04] Release binaries must run at every phase gate, not just milestone end
+- **Context**: M1 T14 perf-gate run — first-ever release-build execution of app-shell panicked: `INPUT_TX.set()` had been written inside a `debug_assert!` (T11 integration), so release builds compiled the side effect out and every input path was dead.
+- **Finding**: All wave verification ran debug builds (`cargo test`, `cargo run` default); a whole class of debug/release divergence (side-effecting debug_assert!, cfg(debug_assertions) behavior) is invisible until a release run.
+- **Impact**: Add a release-mode self-test run (`cargo run --release -- --echo-selftest`) to phase-exit gates and CI. A grep sweep for side-effecting `debug_assert!(` is cheap and worth doing at review time.
+- **Category**: pitfall
+
+### [2026-07-04] libghostty-vt `max_scrollback` is a BYTE budget, not lines
+- **Context**: M1 T3 — default of 10_000 retained only ~577 lines (page-granular eviction).
+- **Finding**: 12 MB ≈ 10.9k 80-col lines. Config key `scrollback-limit` documents bytes.
+- **Impact**: Any future scrollback sizing math (config docs, memory NFR budgets) must convert lines→bytes; the empirical ratio lives in tasks.md Deviations Log.
+- **Category**: pitfall
+
+### [2026-07-04] Orchestration pattern: pre-commit shared-file stubs to unlock same-crate parallel writers
+- **Context**: M1 Wave 2 — T5 (kitty/encoder) and T6 (mouse/paste) both needed term-input/src/lib.rs module decls.
+- **Finding**: Orchestrator pre-wiring `pub mod` stubs + committing lets two agents fill disjoint files with zero same-file races, no worktree overhead.
+- **Impact**: Default technique when partitioning one crate across parallel workers.
+- **Category**: pattern
