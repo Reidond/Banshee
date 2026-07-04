@@ -14,6 +14,9 @@ pub mod mouse;
 pub mod paste;
 
 pub use encoder::{Encoder, Mode};
+pub use kitty::{
+    EventType, DISAMBIGUATE, REPORT_ALL_KEYS, REPORT_ALTERNATE, REPORT_EVENTS, REPORT_TEXT,
+};
 
 /// A platform-neutral key, already translated from whatever native
 /// keyboard API produced it (Win32 VK codes, etc. — that translation is
@@ -25,6 +28,11 @@ pub enum Key {
     /// key was pressed for keybinding purposes, it is not itself the
     /// bytes to send.
     Char(char),
+    /// Return / numpad-Enter. **Numpad Enter is folded into this variant**:
+    /// both the main-block Return and the keypad Enter encode identically
+    /// (legacy `\r`; Kitty `CSI 13 …u` under report-all-keys / modifiers).
+    /// The Kitty keypad key set (distinct keypad code points) is out of scope
+    /// for this crate — the platform layer maps keypad Enter to `Key::Enter`.
     Enter,
     Tab,
     Backspace,
@@ -119,6 +127,18 @@ pub struct KeyEvent {
     /// results. When present alongside [`Modifiers::ALT_GR`], this is
     /// authoritative: encode the text verbatim (see the AltGr rule on
     /// [`Modifiers`]).
+    ///
+    /// # Dead-key contract
+    ///
+    /// A dead key (e.g. `^` on a French layout, `´` for acute accent) does
+    /// **not** commit text on its own press. The platform layer delivers the
+    /// dead-key press as a `KeyEvent` with `text: None` (which the encoder
+    /// turns into *no bytes* — the compose is still pending), and then
+    /// delivers the *composed* grapheme as a later, separate `KeyEvent` whose
+    /// `text` is the finished character (e.g. `text: Some("ê")` for
+    /// `^` then `e`). Encoders therefore never synthesize accents themselves;
+    /// they only emit what `text` already holds. See the `dead_*` /
+    /// `composed_*` golden cases.
     pub text: Option<String>,
 }
 

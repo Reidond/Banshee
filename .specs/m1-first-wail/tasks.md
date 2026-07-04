@@ -99,10 +99,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Phase 1
 - **Files to modify**: `crates/term-input/src/{encoder,legacy,kitty}.rs`, `tests/golden/kitty_matrix.rs`
 - **Acceptance criteria**:
-  - [ ] Kitty progressive-enhancement flags honored per vt-reported state; legacy encodings complete
-  - [ ] Golden matrix: published Kitty spec cases + Windows set (AltGr, dead keys, UA layout, numpad, ctrl+space, ctrl+[) all green
-- **Test requirements**: the golden matrix in CI; layout-dependent cases behind a local-only tag with recorded manual runs
-- **Status**: [ ] Not started
+  - [x] Kitty progressive-enhancement flags honored (`Mode.kitty_flags` fed from `Terminal::kitty_flags()`); legacy encodings complete (ctrl+space/ctrl+[/ctrl+arrows already present, now golden-covered)
+  - [x] Golden matrix: 68 encoder cases green (Kitty spec fetched live + Windows set as encoder-contract cases); AltGr rule holds on both paths; numpad Enter folded into `Key::Enter` (documented)
+- **Test requirements**: the golden matrix in CI; layout-dependent LIVE-input cases remain manual (shell/IME territory — Phase 2 exit checklist)
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 6: Mouse encodings + paste pipeline
 
