@@ -201,11 +201,11 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Tasks 12, 13
 - **Files to modify**: exit report in `.specs/m1-first-wail/`; defect fixes as triaged; Deviations Log
 - **Acceptance criteria**:
-  - [ ] SPEC §10 table green on the reference machine (latency, vtebench ratio, stall, cold start, memory), methodology recorded — the new-tab row is N/A until tabs exist (M2 gate)
-  - [ ] Author self-hosts full workdays; blocking defects fixed, rest triaged to M2 backlog
-  - [ ] M2 spec re-baselined per `.specs/README.md` protocol (promote to full depth)
+  - [~] SPEC §10 table run (release, methodology in [exit-report.md](exit-report.md)): stall PASS (0.122 ms p99), loop-side latency PASS (0.52 ms; PresentMon pending), cold start INCONCLUSIVE (instrumentation), **memory FAIL as measured (109 MB vs ~80 MB → D-M1-1)**, vtebench = operator item
+  - [ ] Author self-hosts full workdays — OPERATOR (the real exit criterion)
+  - [ ] M2 spec re-baseline — deliberately deferred until after self-hosting (see exit report §checklist item 8)
 - **Test requirements**: perf runs archived; exit review = Full quality gate
-- **Status**: [ ] Not started
+- **Status**: [~] Code-complete 2026-07-04; exit report written; operator checklist items 1–8 pending. **Release-only defect found+fixed at the gate: INPUT_TX.set inside debug_assert! (input dead in release); WSL distro-default no longer elects app default profile.**
 
 ## Deviations Log
 

@@ -163,7 +163,9 @@ fn wsl_profiles_generates_one_profile_per_ready_distro() {
     assert_eq!(ubuntu.command, "wsl.exe");
     assert_eq!(ubuntu.args, vec!["-d".to_string(), "Ubuntu".to_string()]);
     assert_eq!(ubuntu.profile_type, ProfileType::Wsl);
-    assert!(ubuntu.default);
+    // Distro-default must NOT elect the app default profile (that stays with
+    // the built-ins unless a USER profile opts in via `default = true`).
+    assert!(!ubuntu.default);
 
     let debian = profiles.iter().find(|p| p.name == "Debian").unwrap();
     assert!(!debian.default);

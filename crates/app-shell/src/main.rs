@@ -791,10 +791,20 @@ impl TermSession {
         // Single session per process: a second spawn would silently route
         // keystrokes into the first (dead) channel. Assert the invariant rather
         // than hide it; multi-session routing is a later `layout` concern.
+        // NOTE: the set() must run in ALL build profiles — a side effect inside
+        // debug_assert! compiles out in release and leaves every input path dead
+        // (found by the release perf-gate run, M1 T14).
+        let input_routed = INPUT_TX.set(input_tx).is_ok();
         debug_assert!(
-            INPUT_TX.set(input_tx).is_ok(),
+            input_routed,
             "TermSession spawned twice — INPUT_TX already routed to an earlier session"
         );
+        if !input_routed {
+            probe(
+                "SESSION",
+                "WARNING: INPUT_TX already set; keystrokes stay routed to the first session",
+            );
+        }
         // Publish a vt handle for the wheel hook's routing predicate.
         let _ = WHEEL_TERM.set(term.clone());
         // Publish a vt handle for the selection hook (press/drag/copy).

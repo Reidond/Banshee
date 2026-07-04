@@ -222,7 +222,11 @@ pub fn wsl_profiles(distros: &[Distro]) -> Vec<Profile> {
             color: None,
             font_size: None,
             theme: None,
-            default: d.is_default,
+            // The WSL *distro* default flag must not claim the *app* default
+            // profile: layout's rule is "first built-in (pwsh) unless a USER
+            // profile sets `default = true`". Auto-profiles never self-elect
+            // (found when the release cold-start gate landed in a bash prompt).
+            default: false,
         })
         .collect()
 }
