@@ -96,3 +96,9 @@ to its home above and removed here.
 - **Finding**: Orchestrator pre-wiring `pub mod` stubs + committing lets two agents fill disjoint files with zero same-file races, no worktree overhead.
 - **Impact**: Default technique when partitioning one crate across parallel workers.
 - **Category**: pattern
+
+### [2026-07-05] Framework-dependent WinUI3 + missing WinAppSDK runtime = silent modal hang, not an error
+- **Context**: First CI run of the e2e smoke on PR #4 — 45 s timeout with zero output.
+- **Finding**: The pinned windows-reactor `bootstrap()` uses `OnNoMatch_ShowUI`: on a machine without Microsoft.WindowsAppRuntime 2.x it pops a modal install dialog and never returns. Runners/fresh machines hang forever instead of failing.
+- **Impact**: (1) ci.yml installs the runtime silently (aka.ms/windowsappsdk/2.0/latest, verified URL). (2) Self-test watchdogs are armed BEFORE bootstrap so the process always self-terminates. (3) Any new CI job or dev machine running app-shell needs the runtime; the FATAL bootstrap message names it. Also proven: DWM composition + presents work on GitHub hosted runners — the smoke gate is real.
+- **Category**: pitfall
