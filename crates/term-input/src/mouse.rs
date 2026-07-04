@@ -210,7 +210,11 @@ pub fn protocol_filter(event: &MouseEvent, protocol: MouseProtocol) -> bool {
 /// `event.col`/`event.row` are 0-based in; the wire format is 1-based, so
 /// `+1` is applied uniformly before any further offset/clamp.
 #[must_use]
-pub fn encode(event: &MouseEvent, protocol: MouseProtocol, encoding: MouseEncoding) -> Option<Vec<u8>> {
+pub fn encode(
+    event: &MouseEvent,
+    protocol: MouseProtocol,
+    encoding: MouseEncoding,
+) -> Option<Vec<u8>> {
     if !protocol_filter(event, protocol) {
         return None;
     }

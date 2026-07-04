@@ -93,7 +93,10 @@ fn parses_docker_desktop_style_entries() {
     let distros = wsl::parse_wsl_list_output(&bytes);
 
     let names: Vec<&str> = distros.iter().map(|d| d.name.as_str()).collect();
-    assert_eq!(names, vec!["Ubuntu", "docker-desktop", "docker-desktop-data"]);
+    assert_eq!(
+        names,
+        vec!["Ubuntu", "docker-desktop", "docker-desktop-data"]
+    );
 }
 
 #[test]
@@ -139,8 +142,18 @@ fn non_table_output_yields_no_distros() {
 #[test]
 fn wsl_profiles_generates_one_profile_per_ready_distro() {
     let distros = vec![
-        Distro { name: "Ubuntu".to_string(), is_default: true, version: Some(2), ready: true },
-        Distro { name: "Debian".to_string(), is_default: false, version: Some(2), ready: true },
+        Distro {
+            name: "Ubuntu".to_string(),
+            is_default: true,
+            version: Some(2),
+            ready: true,
+        },
+        Distro {
+            name: "Debian".to_string(),
+            is_default: false,
+            version: Some(2),
+            ready: true,
+        },
     ];
 
     let profiles = wsl::wsl_profiles(&distros);
@@ -159,7 +172,12 @@ fn wsl_profiles_generates_one_profile_per_ready_distro() {
 #[test]
 fn wsl_profiles_filters_out_non_ready_distros() {
     let distros = vec![
-        Distro { name: "Ubuntu".to_string(), is_default: true, version: Some(2), ready: true },
+        Distro {
+            name: "Ubuntu".to_string(),
+            is_default: true,
+            version: Some(2),
+            ready: true,
+        },
         Distro {
             name: "HalfUninstalled".to_string(),
             is_default: false,
@@ -236,7 +254,10 @@ fn live_wsl_discovery_matches_cli() {
     let health = wsl::wsl_health();
     eprintln!("wsl_health(): {health:?}");
 
-    assert!(!discovered.is_empty(), "expected at least one distro on a machine with WSL installed");
+    assert!(
+        !discovered.is_empty(),
+        "expected at least one distro on a machine with WSL installed"
+    );
 
     if !registry_distros.is_empty() {
         let registry_names: Vec<&str> = registry_distros.iter().map(|d| d.name.as_str()).collect();

@@ -226,7 +226,10 @@ fn clean_frame_skips_when_unchanged() {
     let mut renderer =
         CellRenderer::new(&device.device, Some("Consolas"), PX).expect("cell renderer");
     let m = renderer.metrics();
-    let (w, h) = (m.cell_w_u() * u32::from(COLS), m.cell_h_u() * u32::from(ROWS));
+    let (w, h) = (
+        m.cell_w_u() * u32::from(COLS),
+        m.cell_h_u() * u32::from(ROWS),
+    );
     let target = OffscreenTarget::new(&device, w, h).expect("offscreen");
 
     let f1 = renderer

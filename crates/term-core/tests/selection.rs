@@ -34,7 +34,10 @@ fn linear_selection_joins_soft_wrapped_line_without_newline() {
         text, "0123456789abcde",
         "soft-wrapped linear selection must join without a newline, got {text:?}"
     );
-    assert!(!text.contains('\n'), "no newline across a soft-wrap boundary");
+    assert!(
+        !text.contains('\n'),
+        "no newline across a soft-wrap boundary"
+    );
 }
 
 /// Selecting a full row whose written content is shorter than the grid width
@@ -50,7 +53,10 @@ fn linear_selection_strips_trailing_blanks() {
     t.selection_release(19, 0);
 
     let text = t.selection_text().expect("selection has text");
-    assert_eq!(text, "hi", "trailing blank cells must be trimmed, got {text:?}");
+    assert_eq!(
+        text, "hi",
+        "trailing blank cells must be trimmed, got {text:?}"
+    );
 }
 
 /// Block (rectangular) selection extracts an exact column window on each row,
@@ -90,7 +96,10 @@ fn block_selection_normalizes_drag_direction() {
     t.selection_release(2, 0);
 
     let text = t.selection_text().expect("block selection has text");
-    assert_eq!(text, "CDE\nKLM", "reversed block drag must normalize, got {text:?}");
+    assert_eq!(
+        text, "CDE\nKLM",
+        "reversed block drag must normalize, got {text:?}"
+    );
 }
 
 /// `selection_spans` reports the per-row highlight geometry the overlay draws.
@@ -123,11 +132,20 @@ fn linear_spans_first_interior_last() {
     let spans = t.selection_spans();
     assert_eq!(spans.len(), 3);
     // First row: from col 3 to end of line (width 10).
-    assert_eq!((spans[0].row, spans[0].col_start, spans[0].col_end), (0, 3, 10));
+    assert_eq!(
+        (spans[0].row, spans[0].col_start, spans[0].col_end),
+        (0, 3, 10)
+    );
     // Interior row: full width.
-    assert_eq!((spans[1].row, spans[1].col_start, spans[1].col_end), (1, 0, 10));
+    assert_eq!(
+        (spans[1].row, spans[1].col_start, spans[1].col_end),
+        (1, 0, 10)
+    );
     // Last row: start of line to col 2 inclusive → half-open end 3.
-    assert_eq!((spans[2].row, spans[2].col_start, spans[2].col_end), (2, 0, 3));
+    assert_eq!(
+        (spans[2].row, spans[2].col_start, spans[2].col_end),
+        (2, 0, 3)
+    );
 }
 
 /// Clearing drops both the tracked state and the copyable text.
@@ -175,7 +193,10 @@ fn selection_survives_scrolling_feed_via_tracked_pins() {
     t.feed(b"\r\nline3\r\nline4\r\nline5");
 
     // The selection is still active and still refers to the same logical text.
-    assert!(t.has_selection(), "selection persists across a scrolling feed");
+    assert!(
+        t.has_selection(),
+        "selection persists across a scrolling feed"
+    );
     assert_eq!(
         t.selection_text().as_deref(),
         Some("line1"),

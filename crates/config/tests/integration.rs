@@ -85,11 +85,22 @@ fn malformed_toml_retains_last_good_with_located_error() {
     assert_eq!(svc.current().font_family, "Consolas");
     let gen_before = svc.generation();
 
-    write_file(&path, "font-family = \"Consolas\"\nfont-size = @@@garbage\n");
+    write_file(
+        &path,
+        "font-family = \"Consolas\"\nfont-size = @@@garbage\n",
+    );
     svc.reload_now();
 
-    assert_eq!(svc.current().font_family, "Consolas", "last-good must be retained");
-    assert_eq!(svc.generation(), gen_before, "rejected reload must not bump generation");
+    assert_eq!(
+        svc.current().font_family,
+        "Consolas",
+        "last-good must be retained"
+    );
+    assert_eq!(
+        svc.generation(),
+        gen_before,
+        "rejected reload must not bump generation"
+    );
 
     let diags = svc.diagnostics();
     assert!(!diags.is_empty());
@@ -97,7 +108,10 @@ fn malformed_toml_retains_last_good_with_located_error() {
         .iter()
         .find(|d| d.severity == config::Severity::Error)
         .expect("expected an error diagnostic");
-    assert!(err.span.is_some(), "expected a line/col location on the parse error");
+    assert!(
+        err.span.is_some(),
+        "expected a line/col location on the parse error"
+    );
 }
 
 #[test]
@@ -109,11 +123,16 @@ fn unknown_key_is_warning_not_rejection() {
     let svc = ConfigService::start(Some(path)).unwrap();
     svc.reload_now();
 
-    assert_eq!(svc.current().font_family, "Consolas", "recognized keys still apply");
+    assert_eq!(
+        svc.current().font_family,
+        "Consolas",
+        "recognized keys still apply"
+    );
     let diags = svc.diagnostics();
     assert!(diags
         .iter()
-        .any(|d| d.severity == config::Severity::Warning && d.key.as_deref() == Some("not-a-real-key")));
+        .any(|d| d.severity == config::Severity::Warning
+            && d.key.as_deref() == Some("not-a-real-key")));
 }
 
 #[test]
@@ -165,7 +184,10 @@ fn watcher_applies_change_within_one_second_ceiling() {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    assert!(applied, "config change was not applied within the timing ceiling");
+    assert!(
+        applied,
+        "config change was not applied within the timing ceiling"
+    );
 }
 
 #[test]
@@ -191,5 +213,8 @@ fn watcher_applies_atomic_rename_save() {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    assert!(applied, "atomic rename-replace save was not picked up within the timing ceiling");
+    assert!(
+        applied,
+        "atomic rename-replace save was not picked up within the timing ceiling"
+    );
 }

@@ -115,8 +115,7 @@ impl FontStack {
     /// Create the font stack for the given configured family (None → Consolas).
     pub fn new(family: Option<&str>) -> Result<Self> {
         // SAFETY: standard shared-factory creation; T is the requested interface.
-        let factory: IDWriteFactory =
-            unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+        let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
 
         let mut collection: Option<IDWriteFontCollection> = None;
         // SAFETY: out-param valid; checkForUpdates=false is fine at startup.
@@ -166,11 +165,8 @@ impl FontStack {
         let mut exists = BOOL(0);
         // SAFETY: family_w is NUL-terminated; out-params valid.
         unsafe {
-            self.collection.FindFamilyName(
-                PCWSTR(family_w.as_ptr()),
-                &mut index,
-                &mut exists,
-            )?;
+            self.collection
+                .FindFamilyName(PCWSTR(family_w.as_ptr()), &mut index, &mut exists)?;
         }
         let index = if exists.as_bool() { index } else { 0 };
         let key = (index as usize, weight.0, style.0);
@@ -251,11 +247,7 @@ impl FontStack {
         };
         let mut gid: u16 = 0;
         // SAFETY: single codepoint in, single glyph index out.
-        let ok = unsafe {
-            face.face
-                .GetGlyphIndices(&codepoint, 1, &mut gid)
-                .is_ok()
-        };
+        let ok = unsafe { face.face.GetGlyphIndices(&codepoint, 1, &mut gid).is_ok() };
         ok && gid != 0
     }
 
@@ -830,9 +822,8 @@ fn extract_font_bytes(face: &IDWriteFontFace) -> Result<(Vec<u8>, u32)> {
         stream.ReadFileFragment(&mut fragment_start, 0, size, &mut fragment_ctx)?;
     }
     // SAFETY: fragment_start points to `size` readable bytes for the fragment's life.
-    let bytes = unsafe {
-        std::slice::from_raw_parts(fragment_start as *const u8, size as usize).to_vec()
-    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts(fragment_start as *const u8, size as usize).to_vec() };
     // SAFETY: release the fragment we just read.
     unsafe { stream.ReleaseFileFragment(fragment_ctx) };
 
@@ -1033,4 +1024,3 @@ impl IDWriteTextAnalysisSource_Impl for SingleRunSource_Impl {
         Ok(())
     }
 }
-

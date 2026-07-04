@@ -110,7 +110,13 @@ impl ConfigService {
         let worker = std::thread::Builder::new()
             .name("config-watch".to_string())
             .spawn(move || {
-                run_watch_loop(worker_path, fs_rx, shutdown_rx, worker_state, worker_generation);
+                run_watch_loop(
+                    worker_path,
+                    fs_rx,
+                    shutdown_rx,
+                    worker_state,
+                    worker_generation,
+                );
             })
             .map_err(|e| format!("failed to spawn config watch thread: {e}"))?;
 
@@ -170,7 +176,9 @@ fn load_from_disk(path: &Path) -> (Config, Vec<Diagnostic>) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Config::default(), Vec::new()),
         Err(e) => (
             Config::default(),
-            vec![Diagnostic::error(format!("failed to read config file: {e}"))],
+            vec![Diagnostic::error(format!(
+                "failed to read config file: {e}"
+            ))],
         ),
     }
 }
@@ -194,7 +202,9 @@ fn apply_reload(path: &Path, state: &Arc<Mutex<State>>, generation: &Arc<AtomicU
         }
         Err(e) => {
             let mut st = state.lock().unwrap();
-            st.diagnostics = vec![Diagnostic::error(format!("failed to read config file: {e}"))];
+            st.diagnostics = vec![Diagnostic::error(format!(
+                "failed to read config file: {e}"
+            ))];
             return;
         }
     };
@@ -230,7 +240,11 @@ fn run_watch_loop(
             return;
         }
 
-        let timeout = if pending { DEBOUNCE } else { Duration::from_millis(200) };
+        let timeout = if pending {
+            DEBOUNCE
+        } else {
+            Duration::from_millis(200)
+        };
         match fs_rx.recv_timeout(timeout) {
             Ok(Ok(event)) => {
                 if event_touches_file(&event, file_name.as_deref()) {
@@ -316,8 +330,16 @@ mod tests {
         write_file(&path, "font-size = not-a-number-@@@");
         svc.reload_now();
 
-        assert_eq!(svc.current().font_family, "Consolas", "last-good must be retained");
-        assert_eq!(svc.generation(), gen_before, "generation must not bump on rejection");
+        assert_eq!(
+            svc.current().font_family,
+            "Consolas",
+            "last-good must be retained"
+        );
+        assert_eq!(
+            svc.generation(),
+            gen_before,
+            "generation must not bump on rejection"
+        );
         assert!(svc
             .diagnostics()
             .iter()
@@ -334,7 +356,10 @@ mod tests {
         svc.reload_now();
 
         assert_eq!(svc.current().font_family, "Consolas");
-        assert!(svc.diagnostics().iter().any(|d| d.key.as_deref() == Some("bogus-key")));
+        assert!(svc
+            .diagnostics()
+            .iter()
+            .any(|d| d.key.as_deref() == Some("bogus-key")));
     }
 
     #[test]
@@ -358,7 +383,10 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(applied, "watcher did not pick up direct write within ceiling");
+        assert!(
+            applied,
+            "watcher did not pick up direct write within ceiling"
+        );
     }
 
     #[test]
@@ -386,6 +414,9 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(applied, "watcher did not pick up rename-replace save within ceiling");
+        assert!(
+            applied,
+            "watcher did not pick up rename-replace save within ceiling"
+        );
     }
 }

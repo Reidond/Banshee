@@ -39,7 +39,10 @@ impl Drop for Watchdog {
 }
 
 fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 // ── E1: spawn failure surfaces cleanly with the command line, no reader ──
@@ -127,7 +130,10 @@ fn external_kill_surfaces_as_exit_not_hang() {
     let status = pty
         .wait_exit(Duration::from_secs(10))
         .expect("external kill must surface an exit status, not hang (E4)");
-    eprintln!("[E4] external kill surfaced code={} latency={:?}", status.code, status.detect_latency);
+    eprintln!(
+        "[E4] external kill surfaced code={} latency={:?}",
+        status.code, status.detect_latency
+    );
 
     // Shape it like a normal exit report (Exited cause with the kill code).
     let report = term_pty::ExitReport::from_exit(status, Duration::from_secs(1));
@@ -148,7 +154,10 @@ fn child_env_carries_identity_vars_and_overlay() {
     // Sanity on the composed env before spawning.
     assert_eq!(env.get("TERM_PROGRAM").map(String::as_str), Some("banshee"));
     assert_eq!(env.get("COLORTERM").map(String::as_str), Some("truecolor"));
-    assert_eq!(env.get("BANSHEE_TEST_MARKER").map(String::as_str), Some("marker-42"));
+    assert_eq!(
+        env.get("BANSHEE_TEST_MARKER").map(String::as_str),
+        Some("marker-42")
+    );
 
     let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&buf);
@@ -172,13 +181,19 @@ fn child_env_carries_identity_vars_and_overlay() {
     let mut ok = false;
     while Instant::now() < deadline {
         let text = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
-        if text.contains("TP=banshee") && text.contains("CT=truecolor") && text.contains("MK=marker-42") {
+        if text.contains("TP=banshee")
+            && text.contains("CT=truecolor")
+            && text.contains("MK=marker-42")
+        {
             ok = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(ok, "child env did not carry the identity + overlay vars into pwsh");
+    assert!(
+        ok,
+        "child env did not carry the identity + overlay vars into pwsh"
+    );
     eprintln!("[env] identity + overlay vars observed in child");
 
     pty.write(b"exit 0\r").ok();

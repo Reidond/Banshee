@@ -74,7 +74,10 @@ impl<I: Iterator<Item = Vec<u8>>> Iterator for AssertBounded<I> {
 
 #[test]
 fn ten_megabyte_paste_through_real_conpty_completes_bounded() {
-    let _wd = watchdog("ten_megabyte_paste_through_real_conpty_completes_bounded", 60);
+    let _wd = watchdog(
+        "ten_megabyte_paste_through_real_conpty_completes_bounded",
+        60,
+    );
 
     const TEN_MB: usize = 10 * 1024 * 1024;
     const CHUNK_SIZE: usize = 8192;
@@ -116,8 +119,14 @@ fn ten_megabyte_paste_through_real_conpty_completes_bounded() {
     let seen_max = *max_seen.lock().unwrap();
     let seen_count = *count.lock().unwrap();
 
-    assert_eq!(chunks_written, seen_count, "progress count matches chunks emitted");
-    assert!(seen_count > 1, "10 MB at 8 KiB chunks should be many chunks");
+    assert_eq!(
+        chunks_written, seen_count,
+        "progress count matches chunks emitted"
+    );
+    assert!(
+        seen_count > 1,
+        "10 MB at 8 KiB chunks should be many chunks"
+    );
     // Structural "no unbounded buffering" assertion: peak single chunk
     // allocation never exceeded chunk_size, so the pipeline never handed
     // write_paste anything close to the full 10 MB in one piece.

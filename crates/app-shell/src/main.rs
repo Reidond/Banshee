@@ -108,7 +108,11 @@ fn effective_font() -> (String, f32) {
         .clone()
         .unwrap_or_else(|| "Consolas".to_string());
     let bits = FONT_SIZE_BITS.load(Ordering::SeqCst);
-    let px = if bits == 0 { FONT_PX } else { f32::from_bits(bits) };
+    let px = if bits == 0 {
+        FONT_PX
+    } else {
+        f32::from_bits(bits)
+    };
     (family, px)
 }
 
@@ -136,7 +140,11 @@ fn surface_diagnostics(config: &ConfigService) {
             config::Severity::Error => "ERROR",
             config::Severity::Warning => "WARN",
         };
-        let key = d.key.as_deref().map(|k| format!(" [{k}]")).unwrap_or_default();
+        let key = d
+            .key
+            .as_deref()
+            .map(|k| format!(" [{k}]"))
+            .unwrap_or_default();
         let line = format!("[CONFIG {sev}]{key} {}", d.message);
         eprintln!("{line}");
         #[cfg(windows)]
@@ -468,7 +476,10 @@ impl D3DState {
                             session.resize_to(cols, rows);
                             self.cell_renderer = Some(r);
                             self.just_resized = true;
-                            probe("HOST", &format!("CellRenderer (re)created: {family} {px}px"));
+                            probe(
+                                "HOST",
+                                &format!("CellRenderer (re)created: {family} {px}px"),
+                            );
                         }
                         Err(e) => probe("HOST", &format!("CellRenderer init FAILED: {e}")),
                     }
@@ -765,7 +776,9 @@ impl TermSession {
             &profile,
             INIT_COLS,
             INIT_ROWS,
-            layout::SessionOptions { scrollback_limit: cfg.scrollback_limit },
+            layout::SessionOptions {
+                scrollback_limit: cfg.scrollback_limit,
+            },
         )
         .map_err(|report| std::io::Error::other(report.death_message()))?;
 
@@ -859,7 +872,10 @@ impl TermSession {
         for payload in self.term.take_clipboard_writes() {
             let text = String::from_utf8_lossy(&payload);
             let ok = clipboard::set_text(&text);
-            probe("OSC52", &format!("clipboard write {} bytes ok={ok}", payload.len()));
+            probe(
+                "OSC52",
+                &format!("clipboard write {} bytes ok={ok}", payload.len()),
+            );
         }
         // READ: only pending under an Allow policy (Deny is dropped at feed
         // time). Answer with the current clipboard; the gated response is queued
@@ -1004,7 +1020,10 @@ impl TermSession {
         }
         let enter = enc.encode(&KeyEvent::new(Key::Enter, Modifiers::NONE));
         let _ = tx.send((enter, Instant::now()));
-        probe("E2E", "injected 'echo m1-wail' + Enter via term-input encoder");
+        probe(
+            "E2E",
+            "injected 'echo m1-wail' + Enter via term-input encoder",
+        );
     }
 
     /// Render the current grid snapshot to plain text, one line per row
@@ -1121,7 +1140,10 @@ fn route_wheel(delta: i16) {
     };
     if term.mouse_reporting_active() {
         // App owns the wheel; mouse-event encoding is Wave-2. Drop (do not scroll).
-        probe("WHEEL", "dropped (app has mouse reporting active — Wave-2 encode)");
+        probe(
+            "WHEEL",
+            "dropped (app has mouse reporting active — Wave-2 encode)",
+        );
         return;
     }
     // WHEEL_DELTA = 120 per notch; up (positive delta) scrolls into history
@@ -1130,7 +1152,10 @@ fn route_wheel(delta: i16) {
     let rows = -(notches.round() as isize) * WHEEL_ROWS_PER_NOTCH;
     if rows != 0 {
         term.scroll_viewport(rows);
-        probe("WHEEL", &format!("scroll_viewport({rows}) (notches={notches:.2})"));
+        probe(
+            "WHEEL",
+            &format!("scroll_viewport({rows}) (notches={notches:.2})"),
+        );
     }
 }
 
@@ -1148,9 +1173,7 @@ fn mouse_xy(lparam: LPARAM) -> (i32, i32) {
 /// Read the live Ctrl/Shift/Alt modifier state via `GetKeyState`.
 #[cfg(windows)]
 fn modifier_state() -> (bool, bool, bool) {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT,
-    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
     // SAFETY: GetKeyState is a pure state read; the high bit means "down".
     let down = |vk: i32| -> bool { (unsafe { GetKeyState(vk) } as u16 & 0x8000) != 0 };
     (
@@ -1221,7 +1244,10 @@ fn do_copy() {
         return;
     }
     let ok = clipboard::set_text(&text);
-    probe("SEL", &format!("copy {} chars ok={ok}", text.chars().count()));
+    probe(
+        "SEL",
+        &format!("copy {} chars ok={ok}", text.chars().count()),
+    );
 }
 
 /// Paste from the OS clipboard through the bracketed-paste pipeline
@@ -1252,7 +1278,10 @@ fn do_paste() {
         let _ = tx.send((chunk, Instant::now()));
         chunks += 1;
     }
-    probe("SEL", &format!("paste bracketed={bracketed} chunks={chunks}"));
+    probe(
+        "SEL",
+        &format!("paste bracketed={bracketed} chunks={chunks}"),
+    );
 }
 
 /// Paste chunk size (bytes). Matches the paste pipeline's UTF-8-safe chunking;
@@ -1503,7 +1532,10 @@ fn inspect_input_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     &format!("composition updated (GCS flags=0x{flags:04X})"),
                 );
             } else {
-                probe("IME_UPDATE", &format!("composition msg flags=0x{flags:04X}"));
+                probe(
+                    "IME_UPDATE",
+                    &format!("composition msg flags=0x{flags:04X}"),
+                );
             }
             // Parse GCS_RESULTSTR (commit) and/or GCS_COMPSTR (preview) out of the
             // IMM context and drive the state machine. We handle the message here,
@@ -1533,7 +1565,10 @@ fn inspect_input_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
         #[cfg(windows)]
         _ if msg == ime::win32::WM_IME_SETCONTEXT => {
             let _ = ime::win32::suppress_system_composition_window(lparam.0);
-            probe("IME", "WM_IME_SETCONTEXT (requested inline: suppress system UI)");
+            probe(
+                "IME",
+                "WM_IME_SETCONTEXT (requested inline: suppress system UI)",
+            );
         }
         WM_SETFOCUS => {
             FOCUS_STATE.store(1, Ordering::SeqCst);
@@ -1763,7 +1798,10 @@ fn app(cx: &mut RenderCx) -> Element {
             let d3d = d3d.clone();
             move |panel| {
                 let (w, h) = panel.composition_scale().unwrap_or((1.0, 1.0));
-                probe("HOST", &format!("panel mounted (composition_scale={w},{h})"));
+                probe(
+                    "HOST",
+                    &format!("panel mounted (composition_scale={w},{h})"),
+                );
                 match create_d3d(&panel, 1280, 720) {
                     Ok(state) => {
                         d3d.set(Some(state));
@@ -1789,9 +1827,7 @@ fn app(cx: &mut RenderCx) -> Element {
                 // pipeline (ConPTY resize → vt resize). Skip until the renderer
                 // exists (its metrics define the cell size); the first content
                 // frame forces a present anyway.
-                if let (Some(metrics), Some(session)) =
-                    (metrics, session.borrow_mut().as_mut())
-                {
+                if let (Some(metrics), Some(session)) = (metrics, session.borrow_mut().as_mut()) {
                     session.request_resize(w, h, metrics);
                 }
             }

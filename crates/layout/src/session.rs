@@ -97,11 +97,7 @@ impl Session {
     /// failure path cleans up before returning).
     ///
     /// See the module docs for the E3 snapshot guarantee.
-    pub fn open(
-        profile: &ResolvedProfile,
-        cols: u16,
-        rows: u16,
-    ) -> Result<Session, ExitReport> {
+    pub fn open(profile: &ResolvedProfile, cols: u16, rows: u16) -> Result<Session, ExitReport> {
         Self::open_with_options(profile, cols, rows, SessionOptions::default())
     }
 
@@ -163,14 +159,9 @@ impl Session {
 
         // Reader thread feeds the shared vt with each PTY chunk.
         let feed_term = term.clone();
-        let conpty = ConPty::spawn_spec(
-            &spec,
-            cols as i16,
-            rows as i16,
-            move |chunk: &[u8]| {
-                feed_term.feed(chunk);
-            },
-        )
+        let conpty = ConPty::spawn_spec(&spec, cols as i16, rows as i16, move |chunk: &[u8]| {
+            feed_term.feed(chunk);
+        })
         .map_err(|e| ExitReport::spawn_failed(&command_line, &e))?;
         let conpty = Arc::new(conpty);
 
@@ -343,7 +334,12 @@ mod tests {
         let mut config = Config::default();
         config.profiles.push(wsl_profile());
         let set = crate::ProfileSet::resolve(&config, &[]);
-        let captured = set.profiles().iter().find(|p| p.name == "Ubuntu").unwrap().clone();
+        let captured = set
+            .profiles()
+            .iter()
+            .find(|p| p.name == "Ubuntu")
+            .unwrap()
+            .clone();
 
         // Simulate a hot reload changing the same-named profile's command.
         let mut config2 = Config::default();
@@ -367,7 +363,10 @@ mod tests {
         let set = crate::ProfileSet::resolve(&config, &[]);
         let p = set.profiles().iter().find(|p| p.name == "Ubuntu").unwrap();
         let launch = p.launch_spec();
-        assert_eq!(wsl_distro_from_args(&launch.args), Some("Ubuntu".to_string()));
+        assert_eq!(
+            wsl_distro_from_args(&launch.args),
+            Some("Ubuntu".to_string())
+        );
     }
 
     #[test]

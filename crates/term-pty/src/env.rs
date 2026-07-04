@@ -80,9 +80,7 @@ pub fn build_child_env(
 }
 
 fn is_stripped(name: &str) -> bool {
-    STRIPPED_VARS
-        .iter()
-        .any(|s| s.eq_ignore_ascii_case(name))
+    STRIPPED_VARS.iter().any(|s| s.eq_ignore_ascii_case(name))
 }
 
 /// Snapshot the current process environment as a map. Convenience for callers

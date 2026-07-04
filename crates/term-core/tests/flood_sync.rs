@@ -190,7 +190,11 @@ fn flood_sync_read_lock_latency() {
     println!("\n{:<34} {:>12} {:>12}", "metric", "microseconds", "millis");
     println!("{:-<60}", "");
     let row = |label: &str, d: Duration| {
-        println!("{label:<34} {:>12.1} {:>12.3}", micros(d), d.as_secs_f64() * 1e3);
+        println!(
+            "{label:<34} {:>12.1} {:>12.3}",
+            micros(d),
+            d.as_secs_f64() * 1e3
+        );
     };
     row("consumer lock+update p50", c_p50);
     row("consumer lock+update p95", c_p95);

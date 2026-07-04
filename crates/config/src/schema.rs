@@ -110,7 +110,9 @@ impl Rgb {
             .strip_prefix('#')
             .ok_or_else(|| format!("color '{s}' must start with '#'"))?;
         if hex.len() != 6 {
-            return Err(format!("color '{s}' must be in #rrggbb form (6 hex digits)"));
+            return Err(format!(
+                "color '{s}' must be in #rrggbb form (6 hex digits)"
+            ));
         }
         let byte = |slice: &str| -> Result<u8, String> {
             u8::from_str_radix(slice, 16).map_err(|_| format!("color '{s}' has invalid hex digits"))
@@ -184,7 +186,12 @@ impl Chord {
             }
         }
         let key = key.ok_or_else(|| format!("keybind chord '{s}' has no key component"))?;
-        Ok(Chord { ctrl, alt, shift, key })
+        Ok(Chord {
+            ctrl,
+            alt,
+            shift,
+            key,
+        })
     }
 }
 
@@ -380,13 +387,25 @@ fn collect_unknown_keys(table: &toml::Table, warnings: &mut Vec<Diagnostic>) {
         "profile",
     ];
     const PROFILE_KEYS: &[&str] = &[
-        "name", "command", "args", "cwd", "env", "type", "icon", "color", "font-size", "theme",
+        "name",
+        "command",
+        "args",
+        "cwd",
+        "env",
+        "type",
+        "icon",
+        "color",
+        "font-size",
+        "theme",
         "default",
     ];
 
     for key in table.keys() {
         if !TOP_LEVEL_KEYS.contains(&key.as_str()) {
-            warnings.push(Diagnostic::warning(format!("unrecognized config key \"{key}\"")).with_key(key.clone()));
+            warnings.push(
+                Diagnostic::warning(format!("unrecognized config key \"{key}\""))
+                    .with_key(key.clone()),
+            );
         }
     }
     if let Some(profiles) = table.get("profile").and_then(|v| v.as_array()) {
@@ -466,9 +485,7 @@ fn resolve(raw: RawConfig) -> Result<Config, Vec<Diagnostic>> {
                     match Rgb::parse(s) {
                         Ok(c) => out[i] = c,
                         Err(msg) => {
-                            errors.push(
-                                Diagnostic::error(msg).with_key(format!("palette[{i}]")),
-                            );
+                            errors.push(Diagnostic::error(msg).with_key(format!("palette[{i}]")));
                             ok = false;
                         }
                     }
@@ -492,18 +509,16 @@ fn resolve(raw: RawConfig) -> Result<Config, Vec<Diagnostic>> {
                 let chord = match Chord::parse(&chord_str) {
                     Ok(c) => c,
                     Err(msg) => {
-                        errors.push(
-                            Diagnostic::error(msg).with_key(format!("keybinds.{chord_str}")),
-                        );
+                        errors
+                            .push(Diagnostic::error(msg).with_key(format!("keybinds.{chord_str}")));
                         continue;
                     }
                 };
                 let action = match Action::parse(&action_str) {
                     Ok(a) => a,
                     Err(msg) => {
-                        errors.push(
-                            Diagnostic::error(msg).with_key(format!("keybinds.{chord_str}")),
-                        );
+                        errors
+                            .push(Diagnostic::error(msg).with_key(format!("keybinds.{chord_str}")));
                         continue;
                     }
                 };
@@ -661,14 +676,20 @@ mod tests {
     fn malformed_toml_is_error() {
         let src = "font-size = not a number";
         let err = load_str(src).unwrap_err();
-        assert!(err.iter().any(|d| d.severity == crate::diagnostics::Severity::Error));
+        assert!(err
+            .iter()
+            .any(|d| d.severity == crate::diagnostics::Severity::Error));
     }
 
     #[test]
     fn malformed_toml_reports_span() {
         let src = "font-size = @@@";
         let err = load_str(src).unwrap_err();
-        assert!(err[0].span.is_some(), "expected a line/col span, got {:?}", err[0]);
+        assert!(
+            err[0].span.is_some(),
+            "expected a line/col span, got {:?}",
+            err[0]
+        );
     }
 
     #[test]
@@ -729,7 +750,9 @@ mod tests {
             "ctrl+shift+c" = "not-an-action"
         "#;
         let err = load_str(src).unwrap_err();
-        assert!(err.iter().any(|d| d.key.as_deref() == Some("keybinds.ctrl+shift+c")));
+        assert!(err
+            .iter()
+            .any(|d| d.key.as_deref() == Some("keybinds.ctrl+shift+c")));
     }
 
     #[test]
@@ -768,7 +791,9 @@ mod tests {
             type = "bogus"
         "#;
         let err = load_str(src).unwrap_err();
-        assert!(err.iter().any(|d| d.key.as_deref() == Some("profile[0].type")));
+        assert!(err
+            .iter()
+            .any(|d| d.key.as_deref() == Some("profile[0].type")));
     }
 
     #[test]
@@ -781,14 +806,19 @@ mod tests {
             bogus = 1
         "#;
         let (_, warnings) = load_str(src).unwrap();
-        assert!(warnings.iter().any(|d| d.key.as_deref() == Some("profile.bogus")));
+        assert!(warnings
+            .iter()
+            .any(|d| d.key.as_deref() == Some("profile.bogus")));
     }
 
     #[test]
     fn clipboard_defaults_deny_and_cap() {
         let cfg = Config::default();
         assert_eq!(cfg.clipboard_read, ClipboardReadPolicy::Deny);
-        assert_eq!(cfg.clipboard_write_max_bytes, DEFAULT_CLIPBOARD_WRITE_MAX_BYTES);
+        assert_eq!(
+            cfg.clipboard_write_max_bytes,
+            DEFAULT_CLIPBOARD_WRITE_MAX_BYTES
+        );
     }
 
     #[test]
@@ -802,6 +832,8 @@ mod tests {
     fn clipboard_read_invalid_is_error() {
         let src = r#"clipboard-read = "maybe""#;
         let err = load_str(src).unwrap_err();
-        assert!(err.iter().any(|d| d.key.as_deref() == Some("clipboard-read")));
+        assert!(err
+            .iter()
+            .any(|d| d.key.as_deref() == Some("clipboard-read")));
     }
 }

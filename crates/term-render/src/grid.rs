@@ -28,8 +28,8 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_WRITE, D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_INPUT_ELEMENT_DESC,
     D3D11_INPUT_PER_INSTANCE_DATA, D3D11_INPUT_PER_VERTEX_DATA, D3D11_MAPPED_SUBRESOURCE,
     D3D11_MAP_WRITE_DISCARD, D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SAMPLER_DESC,
-    D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DYNAMIC, D3D11_USAGE_IMMUTABLE,
-    D3D11_VIEWPORT,
+    D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DYNAMIC,
+    D3D11_USAGE_IMMUTABLE, D3D11_VIEWPORT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32_FLOAT,
@@ -232,7 +232,9 @@ impl CellRenderer {
             self.last_composition = composition.cloned();
         }
 
-        let layout = self.text.shape_snapshot(snapshot, force || composition_changed)?;
+        let layout = self
+            .text
+            .shape_snapshot(snapshot, force || composition_changed)?;
         if !layout.dirty {
             return Ok(Frame { dirty: false });
         }
@@ -323,7 +325,12 @@ impl CellRenderer {
                     f32::from(comp.origin_row) * metrics.cell_h,
                 );
                 comp_bg.push(SolidInstance {
-                    rect: [mx, my, f32::from(span_cols) * metrics.cell_w, metrics.cell_h],
+                    rect: [
+                        mx,
+                        my,
+                        f32::from(span_cols) * metrics.cell_w,
+                        metrics.cell_h,
+                    ],
                     color: crate::text::DEFAULT_BG_CLEAR,
                 });
                 // Composition glyphs (reuse the atlas machinery).
@@ -334,9 +341,12 @@ impl CellRenderer {
                         glyph_id: g.glyph_id,
                         px_q,
                     };
-                    let entry =
-                        self.atlas
-                            .get_or_insert(self.text.stack(), key, metrics.px_size, context)?;
+                    let entry = self.atlas.get_or_insert(
+                        self.text.stack(),
+                        key,
+                        metrics.px_size,
+                        context,
+                    )?;
                     let Some(entry) = entry else { continue };
                     let (cx, cy) = (
                         f32::from(g.col) * metrics.cell_w,
@@ -399,13 +409,18 @@ impl CellRenderer {
         Ok(Frame { dirty: true })
     }
 
-    fn draw_solids(&mut self, context: &ID3D11DeviceContext, instances: &[SolidInstance]) -> Result<()> {
+    fn draw_solids(
+        &mut self,
+        context: &ID3D11DeviceContext,
+        instances: &[SolidInstance],
+    ) -> Result<()> {
         if instances.is_empty() {
             return Ok(());
         }
         if instances.len() > self.solid_cap {
             self.solid_cap = instances.len().next_power_of_two();
-            self.solid_vb = dynamic_vb::<SolidInstance>(device_of(context)?.as_ref(), self.solid_cap)?;
+            self.solid_vb =
+                dynamic_vb::<SolidInstance>(device_of(context)?.as_ref(), self.solid_cap)?;
         }
         upload(context, &self.solid_vb, instances)?;
         // SAFETY: live interfaces; strides match the vertex/instance layouts.
@@ -425,13 +440,18 @@ impl CellRenderer {
         Ok(())
     }
 
-    fn draw_glyphs(&mut self, context: &ID3D11DeviceContext, instances: &[GlyphInstance]) -> Result<()> {
+    fn draw_glyphs(
+        &mut self,
+        context: &ID3D11DeviceContext,
+        instances: &[GlyphInstance],
+    ) -> Result<()> {
         if instances.is_empty() {
             return Ok(());
         }
         if instances.len() > self.glyph_cap {
             self.glyph_cap = instances.len().next_power_of_two();
-            self.glyph_vb = dynamic_vb::<GlyphInstance>(device_of(context)?.as_ref(), self.glyph_cap)?;
+            self.glyph_vb =
+                dynamic_vb::<GlyphInstance>(device_of(context)?.as_ref(), self.glyph_cap)?;
         }
         upload(context, &self.glyph_vb, instances)?;
         // SAFETY: live interfaces; atlas SRV + sampler bound to t0/s0.
@@ -453,8 +473,18 @@ impl CellRenderer {
         Ok(())
     }
 
-    fn update_screen_cb(&self, context: &ID3D11DeviceContext, width: u32, height: u32) -> Result<()> {
-        let data = [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32, 0.0, 0.0];
+    fn update_screen_cb(
+        &self,
+        context: &ID3D11DeviceContext,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let data = [
+            1.0 / width.max(1) as f32,
+            1.0 / height.max(1) as f32,
+            0.0,
+            0.0,
+        ];
         upload(context, &self.screen_cb, &[data])
     }
 }

@@ -192,7 +192,10 @@ fn pin_holds_viewport_while_new_output_arrives() {
 
     // (c) scroll_to_bottom re-pins to the tail.
     term.scroll_to_bottom();
-    assert!(term.is_at_bottom(), "scroll_to_bottom must re-pin the viewport");
+    assert!(
+        term.is_at_bottom(),
+        "scroll_to_bottom must re-pin the viewport"
+    );
     assert_eq!(
         term.viewport_offset(),
         0,
@@ -207,7 +210,10 @@ fn pin_holds_viewport_while_new_output_arrives() {
             }
         }
     }
-    assert!(saw_tail, "after scroll_to_bottom the tail line should be visible");
+    assert!(
+        saw_tail,
+        "after scroll_to_bottom the tail line should be visible"
+    );
 }
 
 /// (4) The render path (RenderState / snapshot) shows the scrolled viewport:
@@ -239,8 +245,7 @@ fn render_state_follows_scrolled_viewport() {
         "scrolled render state must not show the live tail; got: {scrolled_text:?}"
     );
     assert!(
-        scrolled_text.contains("line 2")
-            && scrolled_text.lines().any(|l| l.starts_with("line ")),
+        scrolled_text.contains("line 2") && scrolled_text.lines().any(|l| l.starts_with("line ")),
         "scrolled render state should show historical rows; got: {scrolled_text:?}"
     );
 

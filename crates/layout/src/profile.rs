@@ -122,7 +122,11 @@ impl ResolvedProfile {
                 ProfileType::Wsl => None,
                 ProfileType::Windows => self.cwd.as_ref().map(PathBuf::from),
             },
-            env: self.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            env: self
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 }
@@ -302,13 +306,12 @@ mod tests {
     #[test]
     fn user_profile_with_new_name_is_appended() {
         let mut config = Config::default();
-        config.profiles.push(windows_profile("Custom", "custom.exe"));
+        config
+            .profiles
+            .push(windows_profile("Custom", "custom.exe"));
         let set = ProfileSet::resolve(&config, &[]);
         let names: Vec<&str> = set.profiles().iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["pwsh", "Windows PowerShell", "cmd", "Custom"]
-        );
+        assert_eq!(names, vec!["pwsh", "Windows PowerShell", "cmd", "Custom"]);
     }
 
     #[test]
@@ -338,20 +341,31 @@ mod tests {
         let set = ProfileSet::resolve(&config, &[]);
         let pwsh = &set.profiles()[0];
         assert_eq!(pwsh.command, "pwsh-custom.exe");
-        assert!(pwsh.args.is_empty(), "expected whole-profile replacement to drop builtin args");
+        assert!(
+            pwsh.args.is_empty(),
+            "expected whole-profile replacement to drop builtin args"
+        );
     }
 
     #[test]
     fn extra_sources_come_between_builtins_and_user_profiles() {
         let mut config = Config::default();
-        config.profiles.push(windows_profile("PureUser", "user.exe"));
+        config
+            .profiles
+            .push(windows_profile("PureUser", "user.exe"));
         let extra = vec![windows_profile("Ubuntu (WSL)", "wsl.exe")];
 
         let set = ProfileSet::resolve(&config, &extra);
         let names: Vec<&str> = set.profiles().iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["pwsh", "Windows PowerShell", "cmd", "Ubuntu (WSL)", "PureUser"]
+            vec![
+                "pwsh",
+                "Windows PowerShell",
+                "cmd",
+                "Ubuntu (WSL)",
+                "PureUser"
+            ]
         );
     }
 
@@ -537,7 +551,10 @@ mod tests {
 
         assert_eq!(
             spec.env,
-            vec![("A".to_string(), "1".to_string()), ("B".to_string(), "2".to_string())]
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "2".to_string())
+            ]
         );
     }
 }

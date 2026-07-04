@@ -105,9 +105,7 @@ pub fn parse_osc52(bytes: &[u8], write_max_bytes: usize) -> Option<Osc52Request>
 
     // Write: cap the base64 input so the decoded length ≤ write_max_bytes. Each
     // 4 base64 chars decode to ≤ 3 bytes, so keep at most ceil(max/3)*4 chars.
-    let max_b64_len = write_max_bytes
-        .div_ceil(3)
-        .saturating_mul(4);
+    let max_b64_len = write_max_bytes.div_ceil(3).saturating_mul(4);
     let capped = &payload[..payload.len().min(max_b64_len)];
     let decoded = base64_decode(capped);
     // Final defensive clamp in case rounding let one extra triad through.
@@ -139,15 +137,12 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 // ── Minimal, dependency-free standard base64 (RFC 4648, '+' '/' , '=' pad) ──
 
-const B64_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Standard base64 encode with padding.
 #[must_use]

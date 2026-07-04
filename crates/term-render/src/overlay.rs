@@ -78,14 +78,32 @@ fn cell_origin(m: &CellMetrics, col: u16, row: u16) -> (f32, f32) {
 
 /// Cursor shape → outline/fill rects. `HollowBlock` yields four thin edges; the
 /// other three are single rects. Callers append the result to the solid pass.
-pub fn cursor_rects(m: &CellMetrics, col: u16, row: u16, style: CursorStyle, color: [f32; 4]) -> Vec<SolidRect> {
+pub fn cursor_rects(
+    m: &CellMetrics,
+    col: u16,
+    row: u16,
+    style: CursorStyle,
+    color: [f32; 4],
+) -> Vec<SolidRect> {
     let (x, y) = cell_origin(m, col, row);
     let cw = m.cell_w;
     let ch = m.cell_h;
     let thick = (m.px_size * 0.12).clamp(1.0, 3.0);
     match style {
-        CursorStyle::Block => vec![SolidRect { x, y, w: cw, h: ch, color }],
-        CursorStyle::Bar => vec![SolidRect { x, y, w: thick, h: ch, color }],
+        CursorStyle::Block => vec![SolidRect {
+            x,
+            y,
+            w: cw,
+            h: ch,
+            color,
+        }],
+        CursorStyle::Bar => vec![SolidRect {
+            x,
+            y,
+            w: thick,
+            h: ch,
+            color,
+        }],
         CursorStyle::Underline => vec![SolidRect {
             x,
             y: y + ch - thick,
@@ -94,10 +112,34 @@ pub fn cursor_rects(m: &CellMetrics, col: u16, row: u16, style: CursorStyle, col
             color,
         }],
         CursorStyle::HollowBlock => vec![
-            SolidRect { x, y, w: cw, h: thick, color },                    // top
-            SolidRect { x, y: y + ch - thick, w: cw, h: thick, color },    // bottom
-            SolidRect { x, y, w: thick, h: ch, color },                    // left
-            SolidRect { x: x + cw - thick, y, w: thick, h: ch, color },    // right
+            SolidRect {
+                x,
+                y,
+                w: cw,
+                h: thick,
+                color,
+            }, // top
+            SolidRect {
+                x,
+                y: y + ch - thick,
+                w: cw,
+                h: thick,
+                color,
+            }, // bottom
+            SolidRect {
+                x,
+                y,
+                w: thick,
+                h: ch,
+                color,
+            }, // left
+            SolidRect {
+                x: x + cw - thick,
+                y,
+                w: thick,
+                h: ch,
+                color,
+            }, // right
         ],
     }
 }
@@ -122,7 +164,11 @@ pub fn decoration_rects(m: &CellMetrics, d: &Decoration) -> Vec<SolidRect> {
     let (x0, y_top) = cell_origin(m, d.col_start, d.row);
     let span = f32::from(d.col_end.saturating_sub(d.col_start)) * m.cell_w;
     let thick = (m.px_size * 0.08).clamp(1.0, 2.0);
-    let underline_y = y_top + m.baseline + (m.px_size * 0.12).min(m.cell_h - m.baseline - thick).max(0.0);
+    let underline_y = y_top
+        + m.baseline
+        + (m.px_size * 0.12)
+            .min(m.cell_h - m.baseline - thick)
+            .max(0.0);
     let strike_y = y_top + m.baseline - m.px_size * 0.28;
 
     match d.kind {
@@ -134,8 +180,20 @@ pub fn decoration_rects(m: &CellMetrics, d: &Decoration) -> Vec<SolidRect> {
             color: d.color,
         }],
         DecorationKind::UnderlineDouble => vec![
-            SolidRect { x: x0, y: underline_y, w: span, h: thick, color: d.color },
-            SolidRect { x: x0, y: underline_y + thick * 2.0, w: span, h: thick, color: d.color },
+            SolidRect {
+                x: x0,
+                y: underline_y,
+                w: span,
+                h: thick,
+                color: d.color,
+            },
+            SolidRect {
+                x: x0,
+                y: underline_y + thick * 2.0,
+                w: span,
+                h: thick,
+                color: d.color,
+            },
         ],
         DecorationKind::Strikethrough => vec![SolidRect {
             x: x0,
@@ -144,8 +202,12 @@ pub fn decoration_rects(m: &CellMetrics, d: &Decoration) -> Vec<SolidRect> {
             h: thick,
             color: d.color,
         }],
-        DecorationKind::UnderlineDotted => segmented(x0, underline_y, span, thick, d.color, 2.0, 2.0),
-        DecorationKind::UnderlineDashed => segmented(x0, underline_y, span, thick, d.color, 5.0, 3.0),
+        DecorationKind::UnderlineDotted => {
+            segmented(x0, underline_y, span, thick, d.color, 2.0, 2.0)
+        }
+        DecorationKind::UnderlineDashed => {
+            segmented(x0, underline_y, span, thick, d.color, 5.0, 3.0)
+        }
         DecorationKind::UnderlineCurly => {
             // Approximate the undercurl as a small up/down zig-zag of dashes.
             let mut rects = segmented(x0, underline_y, span, thick, d.color, 3.0, 1.0);
@@ -160,14 +222,28 @@ pub fn decoration_rects(m: &CellMetrics, d: &Decoration) -> Vec<SolidRect> {
 }
 
 /// Break a horizontal line into `dash`-long segments separated by `gap`.
-fn segmented(x0: f32, y: f32, span: f32, thick: f32, color: [f32; 4], dash: f32, gap: f32) -> Vec<SolidRect> {
+fn segmented(
+    x0: f32,
+    y: f32,
+    span: f32,
+    thick: f32,
+    color: [f32; 4],
+    dash: f32,
+    gap: f32,
+) -> Vec<SolidRect> {
     let mut out = Vec::new();
     let step = dash + gap;
     let mut x = x0;
     let end = x0 + span;
     while x < end {
         let w = dash.min(end - x);
-        out.push(SolidRect { x, y, w, h: thick, color });
+        out.push(SolidRect {
+            x,
+            y,
+            w,
+            h: thick,
+            color,
+        });
         x += step;
     }
     out
@@ -178,7 +254,12 @@ mod tests {
     use super::*;
 
     fn m() -> CellMetrics {
-        CellMetrics { cell_w: 10.0, cell_h: 20.0, baseline: 15.0, px_size: 16.0 }
+        CellMetrics {
+            cell_w: 10.0,
+            cell_h: 20.0,
+            baseline: 15.0,
+            px_size: 16.0,
+        }
     }
 
     #[test]
@@ -205,7 +286,15 @@ mod tests {
 
     #[test]
     fn selection_spans_columns() {
-        let r = selection_rect(&m(), RowRange { row: 1, col_start: 2, col_end: 5 }, [0.2; 4]);
+        let r = selection_rect(
+            &m(),
+            RowRange {
+                row: 1,
+                col_start: 2,
+                col_end: 5,
+            },
+            [0.2; 4],
+        );
         assert_eq!(r.w, 30.0); // 3 cells
         assert_eq!(r.y, 20.0);
     }
@@ -228,7 +317,7 @@ mod tests {
         let r = composition_underline_rect(&m, 4, 2, 3, [1.0; 4]);
         // Starts at the origin cell.
         assert_eq!(r.x, 40.0); // col 4 * cell_w 10
-        // Spans 3 cells wide.
+                               // Spans 3 cells wide.
         assert_eq!(r.w, 30.0);
         // Sits near the bottom of row 2 (y in [40, 40+cell_h]).
         assert!(r.y >= 40.0 && r.y < 60.0);

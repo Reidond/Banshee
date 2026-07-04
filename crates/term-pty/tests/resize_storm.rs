@@ -80,8 +80,9 @@ fn resize_storm_ordering_and_correctness() {
     const START_ROWS: i16 = 24;
 
     let buf: SharedBuf = Arc::new(Mutex::new(Vec::new()));
-    let conpty =
-        Arc::new(ConPty::spawn(Shell::Pwsh, START_COLS, START_ROWS, sink_into(&buf)).expect("spawn"));
+    let conpty = Arc::new(
+        ConPty::spawn(Shell::Pwsh, START_COLS, START_ROWS, sink_into(&buf)).expect("spawn"),
+    );
 
     let term = SharedTerminal::new(
         Terminal::new(START_COLS as u16, START_ROWS as u16, VtOptions::default())

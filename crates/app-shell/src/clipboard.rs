@@ -134,9 +134,8 @@ mod win32 {
         // Hand ownership of the block to the clipboard. On success the system
         // owns the memory (we must NOT free it).
         // SAFETY: valid format + handle; clipboard is open and owned by us.
-        let ok = unsafe {
-            SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hglobal.0))).is_ok()
-        };
+        let ok =
+            unsafe { SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hglobal.0))).is_ok() };
         if !ok {
             // SetClipboardData failed → we still own the block; free it.
             // SAFETY: hglobal is valid and not yet owned by the clipboard.
@@ -222,8 +221,14 @@ mod tests {
 
     #[test]
     fn copy_chord_requires_ctrl_shift() {
-        assert_eq!(detect_copy_paste(0x43, true, true, false), Some(CopyPasteKey::Copy));
-        assert_eq!(detect_copy_paste(0x56, true, true, false), Some(CopyPasteKey::Paste));
+        assert_eq!(
+            detect_copy_paste(0x43, true, true, false),
+            Some(CopyPasteKey::Copy)
+        );
+        assert_eq!(
+            detect_copy_paste(0x56, true, true, false),
+            Some(CopyPasteKey::Paste)
+        );
         // Missing shift → not our chord (plain Ctrl+C is SIGINT).
         assert_eq!(detect_copy_paste(0x43, true, false, false), None);
         // Alt held → not our chord.

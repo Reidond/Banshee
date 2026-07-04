@@ -95,7 +95,12 @@ fn char_key_code(c: char) -> u32 {
 /// section is entirely default (`modifiers==1`, `event==press`) *and*
 /// `force` is false — callers that always need a modifier field (functional
 /// `CSI 1;<m><letter>` forms) pass `force = true`.
-fn encode_modifier_param(mods: Modifiers, event: EventType, flags: u8, force: bool) -> Option<String> {
+fn encode_modifier_param(
+    mods: Modifiers,
+    event: EventType,
+    flags: u8,
+    force: bool,
+) -> Option<String> {
     let bits = modifier_bitfield(mods);
     let param = 1 + u16::from(bits);
     let report_events = flags & REPORT_EVENTS != 0;

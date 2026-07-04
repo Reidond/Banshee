@@ -86,10 +86,7 @@ fn viewport_grid_ref(term: &Terminal, x: u16, y: u16) -> Option<sys::GhosttyGrid
     let point = sys::GhosttyPoint {
         tag: sys::GhosttyPointTag::GHOSTTY_POINT_TAG_VIEWPORT,
         value: sys::GhosttyPointValue {
-            coordinate: sys::GhosttyPointCoordinate {
-                x,
-                y: u32::from(y),
-            },
+            coordinate: sys::GhosttyPointCoordinate { x, y: u32::from(y) },
         },
     };
     let mut gref = sys::GhosttyGridRef {

@@ -222,8 +222,9 @@ pub mod win32 {
     use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::UI::Input::Ime::{
         ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
-        ImmSetCompositionWindow, CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM, GCS_COMPSTR,
-        GCS_CURSORPOS, GCS_RESULTSTR, HIMC, IME_COMPOSITION_STRING, ISC_SHOWUICOMPOSITIONWINDOW,
+        ImmSetCompositionWindow, CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM,
+        GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTSTR, HIMC, IME_COMPOSITION_STRING,
+        ISC_SHOWUICOMPOSITIONWINDOW,
     };
 
     /// IMM message ids the host matches on but which the `windows` binding does
@@ -358,7 +359,10 @@ pub mod win32 {
         // CFS_POINT anchors the composition window at the cursor cell's top-left.
         let comp_form = COMPOSITIONFORM {
             dwStyle: CFS_POINT,
-            ptCurrentPos: POINT { x: rect.x, y: rect.y },
+            ptCurrentPos: POINT {
+                x: rect.x,
+                y: rect.y,
+            },
             rcArea: RECT::default(),
         };
         // CFS_EXCLUDE keeps the candidate list clear of the cursor cell rectangle
@@ -366,7 +370,10 @@ pub mod win32 {
         let cand_form = CANDIDATEFORM {
             dwIndex: 0,
             dwStyle: CFS_EXCLUDE,
-            ptCurrentPos: POINT { x: rect.x, y: rect.y },
+            ptCurrentPos: POINT {
+                x: rect.x,
+                y: rect.y,
+            },
             rcArea: RECT {
                 left: rect.x,
                 top: rect.y,
@@ -504,10 +511,7 @@ mod tests {
         // Commit emits ClearInline then exactly one SendToPty.
         assert_eq!(
             s.on_event(commit("日本")),
-            vec![
-                ImeAction::ClearInline,
-                ImeAction::SendToPty("日本".into())
-            ]
+            vec![ImeAction::ClearInline, ImeAction::SendToPty("日本".into())]
         );
         assert!(!s.is_composing());
         // Trailing End is a harmless no-op (not composing anymore).

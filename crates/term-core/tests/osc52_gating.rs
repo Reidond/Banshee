@@ -44,7 +44,10 @@ fn read_denied_by_default_produces_no_pty_bytes() {
     let mut t = term(); // default policy = Deny
     t.feed(b"\x1b]52;c;?\x07");
     // No read is even queued under Deny.
-    assert!(!t.clipboard_read_pending(), "deny drops the read at feed time");
+    assert!(
+        !t.clipboard_read_pending(),
+        "deny drops the read at feed time"
+    );
     // Even if the shell erroneously tries to answer, no bytes reach the pty.
     t.answer_clipboard_read(b"secret");
     let responses: Vec<Vec<u8>> = t.responses().collect();
@@ -63,7 +66,10 @@ fn read_allowed_produces_correct_base64_response() {
 
     // Shell supplies the current clipboard; term-core emits the gated response.
     t.answer_clipboard_read(b"hi");
-    assert!(!t.clipboard_read_pending(), "answering clears the pending read");
+    assert!(
+        !t.clipboard_read_pending(),
+        "answering clears the pending read"
+    );
 
     let responses: Vec<Vec<u8>> = t.responses().collect();
     assert_eq!(responses.len(), 1);

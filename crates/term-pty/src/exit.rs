@@ -82,9 +82,7 @@ impl ExitReport {
         ExitReport {
             code: None,
             duration: Duration::ZERO,
-            cause: ExitCause::SpawnFailed(format!(
-                "failed to launch `{command_line}`: {err}"
-            )),
+            cause: ExitCause::SpawnFailed(format!("failed to launch `{command_line}`: {err}")),
         }
     }
 
@@ -174,7 +172,10 @@ mod tests {
 
     #[test]
     fn spawn_failure_names_command_line_and_has_no_code() {
-        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "The system cannot find the file specified.");
+        let err = std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "The system cannot find the file specified.",
+        );
         let r = ExitReport::spawn_failed("nonesuch.exe --foo", &err);
         assert_eq!(r.code, None);
         assert_eq!(r.duration, Duration::ZERO);
@@ -189,7 +190,10 @@ mod tests {
     #[test]
     fn wsl_service_down_message_names_shutdown_action() {
         let base = ExitReport::from_exit(
-            ExitStatus { code: 1, detect_latency: Duration::ZERO },
+            ExitStatus {
+                code: 1,
+                detect_latency: Duration::ZERO,
+            },
             Duration::from_secs(2),
         );
         let r = base.with_wsl_cause("Ubuntu", DeathCause::ServiceDown);
@@ -206,7 +210,10 @@ mod tests {
     #[test]
     fn wsl_distro_terminated_names_distro_restart() {
         let base = ExitReport::from_exit(
-            ExitStatus { code: 1, detect_latency: Duration::ZERO },
+            ExitStatus {
+                code: 1,
+                detect_latency: Duration::ZERO,
+            },
             Duration::from_secs(2),
         );
         let r = base.with_wsl_cause("Debian", DeathCause::DistroTerminated);
@@ -221,7 +228,10 @@ mod tests {
     #[test]
     fn wsl_unknown_leaves_plain_exit() {
         let base = ExitReport::from_exit(
-            ExitStatus { code: 0, detect_latency: Duration::ZERO },
+            ExitStatus {
+                code: 0,
+                detect_latency: Duration::ZERO,
+            },
             Duration::from_secs(2),
         );
         let r = base.clone().with_wsl_cause("Ubuntu", DeathCause::Unknown);

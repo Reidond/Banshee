@@ -181,8 +181,7 @@ fn total_len_matches_reassembled_length() {
 
 #[test]
 fn large_text_exact_reassembly() {
-    let text: String = "The quick brown fox jumps over the lazy dog. 中文测试 🎉\r\n"
-        .repeat(200);
+    let text: String = "The quick brown fox jumps over the lazy dog. 中文测试 🎉\r\n".repeat(200);
     let plan = PastePlan::new(&text, true, 97);
     let chunks: Vec<Vec<u8>> = plan.collect();
     for c in &chunks {

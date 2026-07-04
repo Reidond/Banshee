@@ -10,7 +10,13 @@ use term_input::mouse::{
     MouseProtocol,
 };
 
-fn ev(kind: MouseEventKind, button: MouseButton, col: u16, row: u16, mods: MouseMods) -> MouseEvent {
+fn ev(
+    kind: MouseEventKind,
+    button: MouseButton,
+    col: u16,
+    row: u16,
+    mods: MouseMods,
+) -> MouseEvent {
     MouseEvent {
         kind,
         button,
@@ -324,7 +330,13 @@ fn x10_protocol_never_reports_mods_even_if_set() {
 #[test]
 fn x10_default_encoding_clamps_at_223() {
     // 0-based col/row 200 -> wire coordinate 201 -> +32 = 233, clamp to 223.
-    let event = ev(MouseEventKind::Press, MouseButton::Left, 200, 200, no_mods());
+    let event = ev(
+        MouseEventKind::Press,
+        MouseButton::Left,
+        200,
+        200,
+        no_mods(),
+    );
     let encoded = encode(&event, MouseProtocol::X10, MouseEncoding::Default).unwrap();
     assert_eq!(encoded[3], 32); // Cb unaffected by clamp
     assert_eq!(encoded[4], 223, "column should clamp at 223");

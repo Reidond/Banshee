@@ -272,7 +272,10 @@ pub fn classify_death(distro: &str) -> DeathCause {
 /// "wsl.exe not found" and any other spawn failure.
 fn run_wsl_no_window(args: &[&str]) -> io::Result<Vec<u8>> {
     let mut cmd = Command::new("wsl.exe");
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
 
     #[cfg(windows)]
     {
@@ -324,9 +327,8 @@ mod registry {
         let mut hkey: HKEY = std::ptr::null_mut();
         // SAFETY: `wide` is a valid NUL-terminated UTF-16 buffer alive for the
         // call; `hkey` is a valid out-pointer.
-        let status = unsafe {
-            RegOpenKeyExW(parent, wide.as_ptr(), 0, KEY_READ, &mut hkey as *mut HKEY)
-        };
+        let status =
+            unsafe { RegOpenKeyExW(parent, wide.as_ptr(), 0, KEY_READ, &mut hkey as *mut HKEY) };
         if status as u32 != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(status as i32));
         }

@@ -97,7 +97,9 @@ impl CursorVisualStyle {
         match v {
             S::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => CursorVisualStyle::Bar,
             S::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => CursorVisualStyle::Underline,
-            S::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => CursorVisualStyle::HollowBlock,
+            S::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => {
+                CursorVisualStyle::HollowBlock
+            }
             _ => CursorVisualStyle::Block,
         }
     }

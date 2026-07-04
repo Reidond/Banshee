@@ -290,12 +290,7 @@ impl ConPty {
     /// directory. On spawn failure (E1) the pseudoconsole is closed and **no
     /// reader thread is started** — the error is returned with nothing left
     /// running.
-    pub fn spawn_spec<F>(
-        spec: &SpawnSpec,
-        cols: i16,
-        rows: i16,
-        on_output: F,
-    ) -> io::Result<Self>
+    pub fn spawn_spec<F>(spec: &SpawnSpec, cols: i16, rows: i16, on_output: F) -> io::Result<Self>
     where
         F: FnMut(&[u8]) + Send + 'static,
     {

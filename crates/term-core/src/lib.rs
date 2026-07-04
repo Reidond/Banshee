@@ -545,7 +545,11 @@ impl Terminal {
         // output. The returned pointer is borrowed from the vt and valid until
         // the next mutating call — we copy before returning, so no dangling.
         let rc = unsafe {
-            sys::ghostty_terminal_get(self.inner, data, (&mut s as *mut sys::GhosttyString).cast::<c_void>())
+            sys::ghostty_terminal_get(
+                self.inner,
+                data,
+                (&mut s as *mut sys::GhosttyString).cast::<c_void>(),
+            )
         };
         if rc != sys::GhosttyResult::GHOSTTY_SUCCESS || s.ptr.is_null() {
             return None;
@@ -659,10 +663,7 @@ impl SharedTerminal {
     ///
     /// # Errors
     /// Propagates [`TermError`] from [`RenderState::update`].
-    pub fn with_render_update(
-        &self,
-        render_state: &mut RenderState,
-    ) -> Result<Dirty, TermError> {
+    pub fn with_render_update(&self, render_state: &mut RenderState) -> Result<Dirty, TermError> {
         let guard = self.lock();
         // Lock is held for exactly this call and dropped at the end of the
         // statement — rendering that reads `render_state` afterwards is lock-free.

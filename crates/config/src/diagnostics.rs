@@ -86,7 +86,9 @@ mod tests {
 
     #[test]
     fn display_includes_all_parts() {
-        let d = Diagnostic::error("bad value").with_key("font-size").with_span(3, 7);
+        let d = Diagnostic::error("bad value")
+            .with_key("font-size")
+            .with_span(3, 7);
         assert_eq!(d.to_string(), "error [font-size] at 3:7: bad value");
     }
 

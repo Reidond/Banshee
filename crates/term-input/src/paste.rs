@@ -126,7 +126,8 @@ impl PastePlan {
         let chunk_size = chunk_size.max(1);
         let payload = if bracketed {
             let sanitized = sanitize_embedded_terminator(text);
-            let mut buf = Vec::with_capacity(BRACKET_START.len() + sanitized.len() + BRACKET_END.len());
+            let mut buf =
+                Vec::with_capacity(BRACKET_START.len() + sanitized.len() + BRACKET_END.len());
             buf.extend_from_slice(BRACKET_START);
             buf.extend_from_slice(sanitized.as_bytes());
             buf.extend_from_slice(BRACKET_END);

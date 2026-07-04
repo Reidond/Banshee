@@ -9,17 +9,17 @@
 
 use std::collections::HashMap;
 
+use windows::core::Interface;
 use windows::core::Result;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D, D3D11_BOX,
-    D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
 };
-use windows::core::Interface;
 use windows::Win32::Graphics::DirectWrite::{
-    IDWriteFactory, IDWriteFactory2, IDWriteFontFace, DWRITE_GLYPH_RUN, DWRITE_GRID_FIT_MODE_DEFAULT,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_RENDERING_MODE_ALIASED, DWRITE_RENDERING_MODE_NATURAL,
-    DWRITE_TEXTURE_ALIASED_1x1, DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    DWRITE_TEXTURE_ALIASED_1x1, IDWriteFactory, IDWriteFactory2, IDWriteFontFace, DWRITE_GLYPH_RUN,
+    DWRITE_GRID_FIT_MODE_DEFAULT, DWRITE_MEASURING_MODE_NATURAL, DWRITE_RENDERING_MODE_ALIASED,
+    DWRITE_RENDERING_MODE_NATURAL, DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8_UNORM, DXGI_SAMPLE_DESC};
 
@@ -336,8 +336,7 @@ fn rasterize_glyph(
     };
 
     // SAFETY: analysis live.
-    let bounds: RECT =
-        unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1)? };
+    let bounds: RECT = unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1)? };
     let w = (bounds.right - bounds.left).max(0) as u32;
     let h = (bounds.bottom - bounds.top).max(0) as u32;
     if w == 0 || h == 0 {
