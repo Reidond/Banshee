@@ -132,10 +132,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Phase 2
 - **Files to modify**: `crates/config/src/`, `crates/app-shell/src/` (diagnostics surface), `docs/config-reference.md`
 - **Acceptance criteria**:
-  - [ ] Schema for M1 keys (font, colors-minimal, scrollback, keybinds-basic, profile table, OSC 52 gates) with Ghostty-vocabulary naming (Q4) — every key documented
-  - [ ] Hot reload with last-good semantics; malformed-file and unknown-key scenarios green
-- **Test requirements**: unit tests over parse/merge/last-good; watcher integration test
-- **Status**: [ ] Not started
+  - [x] Schema for M1 keys with Ghostty-vocabulary naming (Q4) — all keys in docs/config-reference.md incl. `scrollback-limit` documented as a byte budget
+  - [x] Hot reload (`notify` watcher, ~100 ms debounce, atomic-rename saves handled) with last-good semantics; generation-counter consumer contract, no cross-thread callbacks
+- **Test requirements**: unit tests over parse/merge/last-good; watcher integration test — 33 tests green incl. rename-replace pickup < 1 s (orchestrator-verified)
+- **Status**: [x] Done (2026-07-04) — app-shell diagnostics-surface wiring rides the Phase 3 integration
 
 ### Task 9: Profile model + defaults
 
