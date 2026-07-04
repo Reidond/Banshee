@@ -21,3 +21,4 @@ $RECYCLE.BIN/
 
 # Soak harness output (scripts/soak.ps1, Task 13) — local run artifacts only.
 /soak-results/
+scripts/vtebench.exe

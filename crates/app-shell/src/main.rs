@@ -764,7 +764,15 @@ struct TermSession {
 impl TermSession {
     fn spawn() -> std::io::Result<Self> {
         // ── PHASE3-INTEGRATION startup (6-line shape) ──
-        let config = ConfigService::start(None)
+        // Dev/test-only override: `BANSHEE_CONFIG_PATH` points the config
+        // service at an explicit config.toml instead of the real
+        // `%APPDATA%\banshee\config.toml`. Used by the live-input E2E matrix
+        // (tests/live_input_matrix.rs) to pin a deterministic bare-shell
+        // profile (`pwsh.exe -NoLogo -NoProfile`) so grid assertions do not
+        // depend on the operator's real default profile. Absent in normal use.
+        let config_override =
+            std::env::var_os("BANSHEE_CONFIG_PATH").map(std::path::PathBuf::from);
+        let config = ConfigService::start(config_override)
             .map_err(|e| std::io::Error::other(format!("config service: {e}")))?;
         let cfg = config.current();
         let profiles = ProfileSet::resolve_with_wsl(&cfg);
