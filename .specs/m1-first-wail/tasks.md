@@ -21,6 +21,7 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Exit criteria**: flood scenario passes UI-stall < 8 ms with the chosen Q2 model **(Q2 decided and logged)**; scrollback + resize golden tests green; text renders with correct fallback for Latin/Cyrillic/CJK
 - **Quality gate**: Standard
 - **Tasks**: 1, 2, 3, 4
+- **Status**: ✅ **EXITED 2026-07-04.** Q2 decided (read-lock, logged); flood p99 0.31 ms vs 8 ms budget (term-core bench; full-render flood re-check rides the Phase 4 perf gate); scrollback/resize tests green; Latin/Cyrillic/CJK WARP tests green. app-shell integrated (SharedTerminal + CellRenderer + ResizePipeline + wheel→scrollback via Win32 hook); echo self-test PASS through the real pipeline (avg key→present 1.46 ms loop-side). Note: reactor exposes no wheel event — wheel rides the existing WH_GETMESSAGE hook (input-layer reality per re-baseline note 2).
 
 ### Phase 2: Input surface complete
 

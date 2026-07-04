@@ -1,38 +1,42 @@
-//! Banshee M0 — Tier-A shell spike (Task 7 / UC-04 step 2 + the Gherkin
-//! "Tier-A shell keyboard focus and text input" feature).
+//! Banshee M1 — Phase 1 shell (the "first wail").
 //!
-//! This binary is D2-memo evidence, not product code. It proves (or disproves)
-//! that a `windows-reactor` window can host a D3D11 flip-model composition
-//! swapchain (UC-04 A1) and reports exactly what keyboard / IME / focus input
-//! surface Reactor exposes.
+//! Graduated from the M0 Tier-A spike (which proved a `windows-reactor` window
+//! can host a D3D11 flip-model composition swapchain and reported the reactor
+//! input surface). This binary now wires the **committed M1 engine stack** end
+//! to end:
 //!
-//! What lives here on purpose:
-//!   * A `swap_chain_panel()` hosting an animated colored cell grid drawn with a
-//!     spike-local D3D11 path (flip-model composition swapchain, 2 buffers,
-//!     waitable object, max frame latency 1 — the UC-04 step-1 shape).
-//!   * Present-to-present frame statistics (the measurable half of UC-04 step 4
-//!     given PresentMon is not wired in this spike).
-//!   * A keyboard / IME / focus probe. Reactor's declarative surface exposes NO
-//!     raw key/char/focus/IME hooks (only pointer events + keyboard
-//!     accelerators — see the report), so the probe subclasses the host HWND and
-//!     logs the Win32 WM_* messages a real terminal must consume anyway.
-//!   * `--self-test`: run ~5 s headless-friendly, then exit 0 printing SELFTEST
-//!     lines so an orchestrator / CI-on-a-desktop can verify hosting works.
+//!   * [`term_core::SharedTerminal`] — the Q2 variant-A shared vt (reader side
+//!     feeds/drains responses; render side snapshots under a brief lock).
+//!   * [`term_pty::ConPty`] + [`term_pty::ResizePipeline`] — the pwsh session and
+//!     the single correct resize-ordering path (ConPTY resize → vt resize).
+//!   * [`term_render::CellRenderer`] — the real text pipeline (DirectWrite +
+//!     rustybuzz shaping + glyph atlas), damage-driven so clean frames skip
+//!     Present.
+//!   * [`term_input::Encoder`] — the M0 key path, unchanged.
 //!
-//! Everything under `// spike-local` is replaced by term-render wiring in T10.
+//! What survives from M0 on purpose:
+//!   * The flip-model composition swapchain in the exact UC-04 step-1 shape
+//!     (2 buffers, FLIP_DISCARD, waitable object, max frame latency 1).
+//!   * Present-to-present [`FrameStats`] — reused as evidence at the M1 perf gate.
+//!   * The Win32 thread-hook input probe (keys / IME / focus). Reactor's
+//!     declarative surface still exposes no raw key/char/focus/IME hooks and **no
+//!     wheel event** (only pointer press/move/etc.), so the hook is the input
+//!     layer M1 builds on — and now also the route for `WM_MOUSEWHEEL`.
+//!   * `--self-test` (hosting evidence, session-free) and `--echo-selftest`
+//!     (real ConPTY roundtrip), both upgraded to the new stack.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use term_core::{CellWidth, GridSnapshot, StyleColor, Terminal, VtOptions};
+use term_core::{CellWidth, GridSnapshot, SharedTerminal, Terminal, VtOptions};
 use term_input::{Encoder, Key, KeyEvent, Mode as EncMode, Modifiers};
-use term_pty::{ConPty, Shell};
-use term_render::GridRenderer;
+use term_pty::{ConPty, ResizePipeline, Shell};
+use term_render::{CellRenderer, GridRenderer};
 
 use windows::core::Interface;
 use windows::Win32::Foundation::*;
@@ -52,17 +56,22 @@ use windows_reactor::{
 /// How long `--self-test` runs before force-exiting with a summary.
 const SELF_TEST_SECS: u64 = 5;
 
+/// Font em size (device px) for the real cell renderer. Matches the term-render
+/// WARP text test so cell metrics are consistent with proven-good geometry.
+const FONT_PX: f32 = 18.0;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    /// Interactive: window stays open until closed; manual input matrix run here.
-    /// A live pwsh session is attached (T10): typing round-trips through the PTY.
+    /// Interactive: window stays open until closed; a live pwsh session is
+    /// attached and typing round-trips through the PTY into the rendered grid.
     Interactive,
     /// Headless-friendly: run SELF_TEST_SECS, print SELFTEST lines, exit 0.
-    /// No PTY session — preserves the T7 hosting-evidence path unchanged.
+    /// No PTY session — preserves the hosting-evidence path unchanged (drives
+    /// the legacy [`GridRenderer`] animated grid, not the text renderer).
     SelfTest,
-    /// T10 end-to-end proof: spawn pwsh, inject `echo m0-e2e` through the
-    /// term-input encoder, verify the echo lands in the rendered vt snapshot,
-    /// print E2E lines (incl. keypress→present latency), exit 0/1.
+    /// End-to-end proof: spawn pwsh, inject `echo m1-wail` through the term-input
+    /// encoder → ConPTY → pwsh echo → vt feed → snapshot → assert the marker is
+    /// in the grid, print E2E lines (incl. keypress→present latency), exit 0/1.
     EchoSelfTest,
 }
 
@@ -97,7 +106,7 @@ fn wall_ms() -> u128 {
 }
 
 /// Every probe line gets a stable prefix so the manual matrix run can be grepped
-/// into the D2 memo: KEY / CHAR / IME_START / IME_UPDATE / IME_COMMIT / FOCUS.
+/// into the memo: KEY / CHAR / IME_START / IME_UPDATE / IME_COMMIT / FOCUS / WHEEL.
 fn probe(prefix: &str, detail: &str) {
     eprintln!(
         "[PROBE {prefix}] t={}ms wall={} {detail}",
@@ -108,7 +117,8 @@ fn probe(prefix: &str, detail: &str) {
 
 // ───────────────────────── frame stats ─────────────────────────
 
-/// Present-to-present interval samples, in milliseconds. UC-04 step 4 evidence.
+/// Present-to-present interval samples, in milliseconds. UC-04 step 4 evidence,
+/// reused as the M1 perf-gate present-latency machinery.
 struct FrameStats {
     last_present: Option<Instant>,
     samples: Vec<f64>,
@@ -162,14 +172,17 @@ impl FrameStats {
     }
 }
 
-// ───────────────────────── D3D11 spike-local render ─────────────────────────
+// ───────────────────────── D3D11 composition swapchain ─────────────────────────
 
-/// Everything needed to draw one animated grid frame into the composition
-/// swapchain. `// spike-local, replaced by term-render wiring in T10`.
+/// Everything needed to draw one frame into the composition swapchain. The
+/// swapchain shape is the M0 UC-04 step-1 config; the *renderer* is now the M1
+/// [`CellRenderer`] text pipeline (session present) or the legacy animated
+/// [`GridRenderer`] (`--self-test` hosting evidence).
 struct D3DState {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
-    /// `ClearView` (scissored fill for spike-local cells) lives on the 11.1 iface.
+    /// `ClearView` (scissored fill for the spike-local self-test cells) lives on
+    /// the 11.1 iface.
     context1: ID3D11DeviceContext1,
     swap_chain: IDXGISwapChain2,
     /// Waitable object for max-frame-latency-1 pacing (UC-04 step 1/3).
@@ -178,13 +191,18 @@ struct D3DState {
     height: u32,
     frame: u64,
     stats: FrameStats,
-    /// T10: term-render instanced grid, created lazily when a session exists.
-    grid: Option<GridRenderer>,
+    /// M1 real text renderer, created lazily when a session exists.
+    cell_renderer: Option<CellRenderer>,
+    /// Legacy animated grid, created lazily for the `--self-test` path only.
+    spike_grid: Option<GridRenderer>,
+    /// Set when the swapchain was just resized: force the next present even if the
+    /// renderer reports the frame clean (the back buffers were reallocated, so the
+    /// previous contents are gone and a skipped Present would show stale/garbage).
+    just_resized: bool,
 }
 
 /// Create the flip-model composition swapchain in the exact UC-04 step-1 shape:
-/// 2 buffers, FLIP_DISCARD, waitable object, max frame latency 1. Deliberately
-/// NOT the reactor sample's simpler FLIP_SEQUENTIAL-without-waitable config.
+/// 2 buffers, FLIP_DISCARD, waitable object, max frame latency 1.
 fn create_d3d(panel: &SwapChainPanelHandle, width: u32, height: u32) -> Result<D3DState> {
     let width = width.max(1);
     let height = height.max(1);
@@ -232,9 +250,6 @@ fn create_d3d(panel: &SwapChainPanelHandle, width: u32, height: u32) -> Result<D
     let swap_chain1 = unsafe { dxgi_factory.CreateSwapChainForComposition(&device, &desc, None)? };
     let swap_chain: IDXGISwapChain2 = swap_chain1.cast()?;
 
-    // Max frame latency 1: the loop blocks until the composition engine is ready
-    // for a new frame, which is what keeps present-to-present near the vsync
-    // interval instead of queueing.
     unsafe { swap_chain.SetMaximumFrameLatency(1)? };
     let frame_latency_waitable = unsafe { swap_chain.GetFrameLatencyWaitableObject() };
 
@@ -257,7 +272,9 @@ fn create_d3d(panel: &SwapChainPanelHandle, width: u32, height: u32) -> Result<D
         height,
         frame: 0,
         stats: FrameStats::new(),
-        grid: None,
+        cell_renderer: None,
+        spike_grid: None,
+        just_resized: false,
     })
 }
 
@@ -279,14 +296,17 @@ impl D3DState {
         }
         self.width = width;
         self.height = height;
+        // Back buffers were reallocated: the next frame must present even if the
+        // vt content is unchanged, so the client sees a correctly-sized image.
+        self.just_resized = true;
     }
 
     /// Draw one frame and present.
     ///
-    /// With a live session (T10): the vt snapshot's cell colors through
-    /// term-render's instanced grid — the real keystroke→…→present path.
-    /// Without one (--self-test): the original spike-local animated grid, so
-    /// the T7 hosting evidence stays reproducible unchanged.
+    /// With a live session (M1): snapshot the vt under the lock, then drive the
+    /// real [`CellRenderer`] text pipeline — the keystroke→…→present path.
+    /// Without one (`--self-test`): the legacy animated grid, so the hosting
+    /// evidence stays reproducible unchanged.
     fn render_frame(&mut self, session: Option<&mut TermSession>) {
         // Block on the waitable so we present at most one frame ahead. Timing out
         // rather than waiting forever keeps a headless/occluded window from
@@ -304,7 +324,9 @@ impl D3DState {
         self.frame += 1;
         let f = self.frame;
 
-        // T10: run the session tick (input→PTY, PTY→vt, snapshot) before drawing.
+        // Run the session tick (input→PTY, PTY→vt drain, responses→PTY) before
+        // drawing. Returns whether fresh bytes were fed this tick (used both for
+        // damage/present and for latency attribution).
         let session = match session {
             Some(s) => {
                 s.tick();
@@ -331,32 +353,50 @@ impl D3DState {
             }
             let rtv = rtv.unwrap();
 
+            let mut presented = false;
+
             if let Some(session) = &session {
-                // ── T10 path: vt snapshot colors → term-render instanced grid ──
-                if self.grid.is_none() {
-                    match GridRenderer::new(
-                        &self.device,
-                        u32::from(GRID_COLS),
-                        u32::from(GRID_ROWS),
-                    ) {
-                        Ok(g) => self.grid = Some(g),
-                        Err(e) => probe("HOST", &format!("GridRenderer init FAILED: {e}")),
+                // ── M1 path: vt snapshot → CellRenderer text pipeline ──
+                if self.cell_renderer.is_none() {
+                    match CellRenderer::new(&self.device, Some("Consolas"), FONT_PX) {
+                        Ok(r) => self.cell_renderer = Some(r),
+                        Err(e) => probe("HOST", &format!("CellRenderer init FAILED: {e}")),
                     }
                 }
-                if let Some(grid) = &self.grid {
-                    let colors: &[[f32; 4]] = if session.colors.is_empty() {
-                        &[]
-                    } else {
-                        &session.colors
-                    };
-                    if let Err(e) =
-                        grid.render_cells(&self.context, &rtv, self.width, self.height, colors)
-                    {
-                        probe("HOST", &format!("render_cells failed: {e}"));
+                if let Some(renderer) = self.cell_renderer.as_mut() {
+                    // Force present on the first content frame and immediately
+                    // after a swapchain resize (buffers reallocated). Otherwise
+                    // let damage detection decide.
+                    let force = self.just_resized;
+                    match renderer.render_snapshot(
+                        &self.context,
+                        &rtv,
+                        self.width,
+                        self.height,
+                        &session.snap,
+                        &[], // selection model is a later task
+                        force,
+                    ) {
+                        Ok(frame) => {
+                            if frame.is_dirty() {
+                                let hr = self.swap_chain.Present(1, DXGI_PRESENT(0));
+                                if hr.is_err() {
+                                    probe("HOST", &format!("Present failed: {:?}", hr));
+                                }
+                                presented = true;
+                            }
+                        }
+                        Err(e) => probe("HOST", &format!("render_snapshot failed: {e}")),
                     }
                 }
             } else {
-                // ── T7 path (--self-test): spike-local animated grid, unchanged ──
+                // ── --self-test path: legacy animated grid, unchanged shape ──
+                if self.spike_grid.is_none() {
+                    match GridRenderer::new(&self.device, SELFTEST_COLS, SELFTEST_ROWS) {
+                        Ok(g) => self.spike_grid = Some(g),
+                        Err(e) => probe("HOST", &format!("GridRenderer init FAILED: {e}")),
+                    }
+                }
                 // Background wash so the grid reads as animated even before cells draw.
                 let t = ((f as f64) * 0.02).sin().abs() as f32;
                 self.context
@@ -371,7 +411,6 @@ impl D3DState {
                 let ch = (self.height / ROWS).max(1);
                 for gy in 0..ROWS {
                     for gx in 0..COLS {
-                        // A moving hue field: phase depends on cell + frame.
                         let phase = (gx + gy) as f64 * 0.4 + (f as f64) * 0.08;
                         let r = (0.5 + 0.5 * (phase).sin()) as f32;
                         let g = (0.5 + 0.5 * (phase + 2.09).sin()) as f32;
@@ -379,7 +418,6 @@ impl D3DState {
 
                         let x = gx * cw;
                         let y = gy * ch;
-                        // 1px gutter so individual cells are visible.
                         let rect = RECT {
                             left: x as i32 + 1,
                             top: y as i32 + 1,
@@ -389,30 +427,35 @@ impl D3DState {
                         if rect.right <= rect.left || rect.bottom <= rect.top {
                             continue;
                         }
-                        // ClearView (11.1) fills only the given rect — a cheap
-                        // per-cell colored quad without shaders or scissor state.
                         self.context1
                             .ClearView(&rtv, &[r, g, b, 1.0], Some(&[rect]));
                     }
                 }
+                let hr = self.swap_chain.Present(1, DXGI_PRESENT(0));
+                if hr.is_err() {
+                    probe("HOST", &format!("Present failed: {:?}", hr));
+                }
+                presented = true;
             }
 
-            // Present. Interval 1 = vsync-paced (matches the 120 Hz target intent).
-            let hr = self.swap_chain.Present(1, DXGI_PRESENT(0));
-            if hr.is_err() {
-                probe("HOST", &format!("Present failed: {:?}", hr));
+            if presented {
+                self.just_resized = false;
+                self.stats.record_present();
             }
         }
 
-        self.stats.record_present();
-
-        // T10: attribute pending keypresses to this present, and let the echo
+        // Attribute pending keypresses to this present, and let the echo
         // self-test conclude once its marker has rendered.
         if let Some(session) = session {
             session.after_present();
         }
     }
 }
+
+/// Fixed geometry for the session-free `--self-test` legacy grid (mirrors the M0
+/// hosting-evidence shape).
+const SELFTEST_COLS: u32 = 100;
+const SELFTEST_ROWS: u32 = 30;
 
 // ───────────────────────── shared spike state ─────────────────────────
 
@@ -426,39 +469,52 @@ static P95_FRAME_US: AtomicU64 = AtomicU64::new(0);
 /// Focus state (0 = unknown, 1 = focused, 2 = blurred) for the summary line.
 static FOCUS_STATE: AtomicU8 = AtomicU8::new(0);
 
-// ───────────────────────── T10: PTY⇄vt session (end-to-end thread) ─────────────────────────
+// ───────────────────────── PTY⇄vt session (M1 stack) ─────────────────────────
 
-/// Fixed spike geometry: the PTY, the vt, and the rendered grid all share it.
-/// Dynamic resize correctness is an M1 concern (UC-03 E2 is already proven at
-/// the term-pty layer); M0 wires the data path at one geometry.
-const GRID_COLS: u16 = 100;
-const GRID_ROWS: u16 = 30;
+/// Initial session geometry. The window resize path drives the real geometry
+/// from cell metrics once the renderer exists; this is the pre-mount default.
+const INIT_COLS: u16 = 100;
+const INIT_ROWS: u16 = 30;
 
 /// Encoded input bytes + the keypress timestamp, from the WM_* probe (real
 /// typing) or the echo self-test injector (synthetic KeyEvents).
 type InputMsg = (Vec<u8>, Instant);
 
-/// The subclass proc runs as a plain extern fn, so the input path to the
+/// The subclass/hook procs run as plain extern fns, so the input path to the
 /// session goes through a global channel installed at session creation.
 static INPUT_TX: OnceLock<Sender<InputMsg>> = OnceLock::new();
 
-/// One live end-to-end session: keystroke → encoder → ConPTY(pwsh) → vt feed →
-/// snapshot → per-cell colors → term-render instanced grid → present.
+/// Wheel routing: the hook proc (a plain extern fn) needs a handle to the vt to
+/// answer the `mouse_reporting_active()` predicate and to `scroll_viewport`. A
+/// clone of the session's `SharedTerminal` is published here at session creation.
+static WHEEL_TERM: OnceLock<SharedTerminal> = OnceLock::new();
+
+/// Rows scrolled per wheel notch (one `WHEEL_DELTA` = 120). Matches a typical
+/// terminal's 3-line wheel step.
+const WHEEL_ROWS_PER_NOTCH: isize = 3;
+
+/// One live end-to-end session on the committed M1 stack:
+/// keystroke → encoder → ConPTY(pwsh) → vt feed → snapshot → CellRenderer → present.
 struct TermSession {
-    conpty: ConPty,
-    term: Terminal,
-    /// Raw PTY output chunks, sent from the ConPty reader thread.
-    pty_rx: Receiver<Vec<u8>>,
+    /// Shared vt (Q2 variant A). The ConPTY reader thread feeds it; the render
+    /// thread snapshots it under the brief lock.
+    term: SharedTerminal,
+    /// The pty. `Arc` so [`ResizePipeline`] can hold its own reference to the
+    /// same session and the render tick can write query responses back to it.
+    conpty: Arc<ConPty>,
+    /// The one correct resize-ordering path (ConPTY resize → vt resize). Kept so
+    /// the window resize handler can `request` against it.
+    resize: ResizePipeline,
     /// Encoded keyboard bytes from the probe / injector.
     input_rx: Receiver<InputMsg>,
+    /// Reused snapshot buffer (allocated once, refilled per fed tick). Lives
+    /// outside the lock; only the `snapshot()` call holds the lock.
     snap: GridSnapshot,
-    /// Cell colors derived from the latest snapshot (row-major).
-    colors: Vec<[f32; 4]>,
     /// Keypress stamps awaiting their first content-bearing present.
     pending_keys: VecDeque<Instant>,
     /// Completed keypress→present samples (ms).
     key_to_present_ms: Vec<f64>,
-    /// True when this tick fed new PTY bytes (snapshot + colors refreshed).
+    /// True when this tick fed new PTY bytes (snapshot refreshed).
     fed_this_tick: bool,
     /// Echo self-test state.
     injected: bool,
@@ -469,40 +525,50 @@ struct TermSession {
 
 impl TermSession {
     fn spawn() -> std::io::Result<Self> {
-        let (pty_tx, pty_rx) = channel::<Vec<u8>>();
+        // The vt behind the shared lock. The reader callback below feeds it
+        // directly (no intermediate channel) — SharedTerminal is Clone+Send+Sync.
+        let term = SharedTerminal::new(
+            Terminal::new(INIT_COLS, INIT_ROWS, VtOptions::default())
+                .map_err(|e| std::io::Error::other(format!("vt construct failed: {e}")))?,
+        );
+
+        // Reader thread: feed the shared vt with each PTY chunk. Query responses
+        // captured during feed are drained on the render tick (see `tick`).
+        let feed_term = term.clone();
         let conpty = ConPty::spawn(
             Shell::Pwsh,
-            GRID_COLS as i16,
-            GRID_ROWS as i16,
+            INIT_COLS as i16,
+            INIT_ROWS as i16,
             move |chunk: &[u8]| {
-                // Reader thread: keep it cheap — copy and hand off.
-                let _ = pty_tx.send(chunk.to_vec());
+                feed_term.feed(chunk);
             },
         )?;
-        let term = Terminal::new(GRID_COLS, GRID_ROWS, VtOptions::default())
-            .map_err(|e| std::io::Error::other(format!("vt construct failed: {e}")))?;
+        let conpty = Arc::new(conpty);
+
+        // The single resize-ordering point for this session (SPEC §6.5).
+        let resize = ResizePipeline::new(Arc::clone(&conpty), term.clone());
 
         let (input_tx, input_rx) = channel::<InputMsg>();
-        // Single session per process in M0: a second spawn would silently
-        // route keystrokes into the first (dead) channel. Assert the invariant
-        // rather than hide it (exit-review finding); multi-session routing is
-        // an M1 `layout` concern.
+        // Single session per process: a second spawn would silently route
+        // keystrokes into the first (dead) channel. Assert the invariant rather
+        // than hide it; multi-session routing is a later `layout` concern.
         debug_assert!(
             INPUT_TX.set(input_tx).is_ok(),
             "TermSession spawned twice — INPUT_TX already routed to an earlier session"
         );
+        // Publish a vt handle for the wheel hook's routing predicate.
+        let _ = WHEEL_TERM.set(term.clone());
 
         probe(
             "PTY",
-            &format!("session spawned: pwsh {GRID_COLS}x{GRID_ROWS} (T10 e2e thread)"),
+            &format!("session spawned: pwsh {INIT_COLS}x{INIT_ROWS} (M1 SharedTerminal stack)"),
         );
         Ok(Self {
-            conpty,
             term,
-            pty_rx,
+            conpty,
+            resize,
             input_rx,
             snap: GridSnapshot::new(),
-            colors: Vec::new(),
             pending_keys: VecDeque::new(),
             key_to_present_ms: Vec::new(),
             fed_this_tick: false,
@@ -513,8 +579,12 @@ impl TermSession {
         })
     }
 
-    /// Pre-render tick: forward input to the PTY, drain PTY output into the vt,
-    /// drain vt query responses back to the PTY, refresh snapshot + colors.
+    /// Pre-render tick: forward input to the PTY, drain vt query responses back
+    /// to the PTY, refresh the snapshot.
+    ///
+    /// The reader thread already fed the vt with PTY output (in the ConPTY
+    /// callback). Here we (a) push queued keystrokes, (b) drain DSR/DA/OSC
+    /// responses the vt wants written back, and (c) snapshot under the brief lock.
     fn tick(&mut self) {
         self.fed_this_tick = false;
 
@@ -536,24 +606,25 @@ impl TermSession {
             }
         }
 
-        // PTY → vt.
-        while let Ok(chunk) = self.pty_rx.try_recv() {
-            self.term.feed(&chunk);
-            self.fed_this_tick = true;
-        }
-
         // vt query responses (DSR/DA/OSC replies) → PTY writer (SPEC §6.1 shape).
-        let responses: Vec<Vec<u8>> = self.term.responses().collect();
-        for r in responses {
+        // The reader thread captured these while feeding; drain and forward them
+        // so cursor-position / device-attribute answers flow back to pwsh.
+        for r in self.term.take_responses() {
             let _ = self.conpty.write(&r);
         }
 
-        if self.fed_this_tick {
-            self.term.snapshot(&mut self.snap);
-            self.refresh_colors();
-            if mode() == Mode::EchoSelfTest && self.injected && self.echo_seen_at.is_none() {
-                self.scan_for_echo();
-            }
+        // Snapshot under the brief lock. We reuse `self.snap` across frames and
+        // only hold the lock for the `snapshot` call itself.
+        //
+        // TODO(M1 perf pass): migrate this to `SharedTerminal::with_render_update`
+        // + a `RenderState` iterator (the committed T1 render-sync path). The
+        // renderer currently consumes `GridSnapshot`, so we snapshot per frame for
+        // now; the iterator migration replaces this at the next perf pass.
+        self.term.with_locked(|t| t.snapshot(&mut self.snap));
+        self.fed_this_tick = true;
+
+        if mode() == Mode::EchoSelfTest && self.injected && self.echo_seen_at.is_none() {
+            self.scan_for_echo();
         }
 
         if !self.exit_logged {
@@ -570,9 +641,21 @@ impl TermSession {
         }
     }
 
-    /// Post-present hook: attribute pending keypresses to the first present
-    /// that carried fresh PTY-fed content. Loop-side approximation of the
-    /// keypress→present NFR (PresentMon correlation is the finalized method).
+    /// Compute cols/rows for the current client size and request a resize through
+    /// the correct ordering path. Called from the window resize handler.
+    fn request_resize(&self, width: u32, height: u32, metrics: term_render::CellMetrics) {
+        let cell_w = metrics.cell_w_u().max(1);
+        let cell_h = metrics.cell_h_u().max(1);
+        let cols = (width / cell_w).max(1).min(i16::MAX as u32) as i16;
+        let rows = (height / cell_h).max(1).min(i16::MAX as u32) as i16;
+        // ResizePipeline is the ONLY correct path: it orders ResizePseudoConsole
+        // before the vt resize. Never call ConPty::resize / SharedTerminal::resize
+        // directly for a window resize.
+        self.resize.request(cols, rows);
+    }
+
+    /// Post-present hook: attribute pending keypresses to the first present that
+    /// carried fresh content. Loop-side approximation of the keypress→present NFR.
     fn after_present(&mut self) {
         if !self.fed_this_tick {
             return;
@@ -582,31 +665,27 @@ impl TermSession {
             self.key_to_present_ms
                 .push(now.duration_since(at).as_secs_f64() * 1000.0);
         }
-        // Echo self-test: once the echo was seen and rendered, report and exit.
         if mode() == Mode::EchoSelfTest && self.echo_seen_at.is_some() {
             self.report_e2e_and_exit();
         }
     }
 
-    /// Encode `echo m0-e2e\r` as individual KeyEvents through term-input —
-    /// the same path WM_CHAR typing takes — and stamp each for latency.
+    /// Encode `echo m1-wail\r` as individual KeyEvents through term-input — the
+    /// same path WM_CHAR typing takes — and stamp each for latency.
     fn inject_echo_command(&self) {
         let enc = Encoder::new(EncMode::default());
         let tx = INPUT_TX.get().expect("session installed the input channel");
-        for ch in "echo m0-e2e".chars() {
+        for ch in "echo m1-wail".chars() {
             let ev = KeyEvent::with_text(Key::Char(ch), Modifiers::NONE, ch.to_string());
             let bytes = enc.encode(&ev);
             let _ = tx.send((bytes, Instant::now()));
         }
         let enter = enc.encode(&KeyEvent::new(Key::Enter, Modifiers::NONE));
         let _ = tx.send((enter, Instant::now()));
-        probe(
-            "E2E",
-            "injected 'echo m0-e2e' + Enter via term-input encoder",
-        );
+        probe("E2E", "injected 'echo m1-wail' + Enter via term-input encoder");
     }
 
-    /// Look for the echoed marker anywhere in the active grid.
+    /// Look for the echoed marker anywhere in the active grid snapshot.
     fn scan_for_echo(&mut self) {
         for row in &self.snap.rows_data {
             let text: String = row
@@ -615,7 +694,7 @@ impl TermSession {
                 .filter(|c| !matches!(c.width, CellWidth::SpacerTail))
                 .map(|c| char::from_u32(c.codepoint).unwrap_or(' '))
                 .collect();
-            if text.contains("m0-e2e") {
+            if text.contains("m1-wail") {
                 self.echo_seen_at = Some(Instant::now());
                 probe(
                     "E2E",
@@ -641,7 +720,7 @@ impl TermSession {
         println!(
             "E2E echo_detected=true keys={n} key_to_present_avg_ms={avg:.2} \
              key_to_present_p95_ms={p95:.2} frames_presented={frames} \
-             (loop-side; keystroke→encoder→ConPTY→pwsh echo→vt feed→snapshot→render→present)"
+             (loop-side; keystroke→encoder→ConPTY→pwsh echo→vt feed→snapshot→CellRenderer→present)"
         );
         println!("E2E result=PASS");
         use std::io::Write;
@@ -649,86 +728,11 @@ impl TermSession {
         let _ = std::io::stderr().flush();
         std::process::exit(0);
     }
-
-    /// Derive per-cell colors from the snapshot: background from the cell's bg
-    /// style, content-bearing cells lit toward their fg color, cursor inverted.
-    /// (Glyphs are M1 — color is the M0 visibility vehicle.)
-    fn refresh_colors(&mut self) {
-        let cols = usize::from(GRID_COLS);
-        let rows = usize::from(GRID_ROWS);
-        self.colors.resize(cols * rows, DEFAULT_BG);
-        for (y, row) in self.snap.rows_data.iter().enumerate().take(rows) {
-            for (x, cell) in row.cells.iter().enumerate().take(cols) {
-                let bg = style_to_rgba(&cell.style.bg, DEFAULT_BG);
-                let mut c = bg;
-                let printable = cell.codepoint > 0x20;
-                if printable {
-                    let fg = style_to_rgba(&cell.style.fg, DEFAULT_FG);
-                    // Blend so text cells clearly light up against their bg.
-                    c = [
-                        bg[0] * 0.3 + fg[0] * 0.7,
-                        bg[1] * 0.3 + fg[1] * 0.7,
-                        bg[2] * 0.3 + fg[2] * 0.7,
-                        1.0,
-                    ];
-                }
-                self.colors[y * cols + x] = c;
-            }
-        }
-        // Cursor block overlay.
-        let (cx, cy) = (
-            usize::from(self.snap.cursor.x),
-            usize::from(self.snap.cursor.y),
-        );
-        if self.snap.cursor.visible && cx < cols && cy < rows {
-            self.colors[cy * cols + cx] = [0.95, 0.95, 0.85, 1.0];
-        }
-    }
 }
 
-const DEFAULT_BG: [f32; 4] = [0.05, 0.05, 0.10, 1.0];
-const DEFAULT_FG: [f32; 4] = [0.75, 0.80, 0.75, 1.0];
-
-/// Map a vt style color to RGBA. Palette entries use the standard 16 ANSI
-/// colors (256-cube entries collapse to a mid gray in M0 — themes are M2).
-fn style_to_rgba(c: &StyleColor, default: [f32; 4]) -> [f32; 4] {
-    const ANSI16: [[f32; 3]; 16] = [
-        [0.00, 0.00, 0.00],
-        [0.80, 0.00, 0.00],
-        [0.00, 0.80, 0.00],
-        [0.80, 0.80, 0.00],
-        [0.11, 0.32, 0.80],
-        [0.80, 0.00, 0.80],
-        [0.00, 0.80, 0.80],
-        [0.85, 0.85, 0.85],
-        [0.50, 0.50, 0.50],
-        [1.00, 0.33, 0.33],
-        [0.33, 1.00, 0.33],
-        [1.00, 1.00, 0.33],
-        [0.35, 0.55, 1.00],
-        [1.00, 0.33, 1.00],
-        [0.33, 1.00, 1.00],
-        [1.00, 1.00, 1.00],
-    ];
-    match c {
-        StyleColor::Rgb(r, g, b) => [
-            f32::from(*r) / 255.0,
-            f32::from(*g) / 255.0,
-            f32::from(*b) / 255.0,
-            1.0,
-        ],
-        StyleColor::Palette(i) if usize::from(*i) < 16 => {
-            let [r, g, b] = ANSI16[usize::from(*i)];
-            [r, g, b, 1.0]
-        }
-        StyleColor::Palette(_) => [0.55, 0.55, 0.55, 1.0],
-        StyleColor::None => default,
-    }
-}
-
-/// Translate a probe WM_CHAR into encoded PTY bytes (control chars pass
-/// through as-is; printables as UTF-8). Returns None for chars the encoder
-/// path should ignore here (surrogates).
+/// Translate a probe WM_CHAR into encoded PTY bytes (control chars pass through
+/// as-is; printables as UTF-8). Returns None for chars the encoder path should
+/// ignore here (surrogates).
 fn char_to_bytes(code: u32) -> Option<Vec<u8>> {
     let ch = char::from_u32(code)?;
     let enc = Encoder::new(EncMode::default());
@@ -764,16 +768,39 @@ fn vk_to_key(vk: u32) -> Option<Key> {
     })
 }
 
-// ──────────────────── Win32 thread-hook focus/IME/key probe ────────────────────
+/// Route a `WM_MOUSEWHEEL` notch count to the vt.
+///
+/// Wheel-routing predicate (SPEC / scrollback module): when the running app has
+/// NOT claimed mouse reporting, wheel scrolls the scrollback viewport; when it
+/// HAS, the wheel belongs to the app as an encoded mouse event — a Wave-2 input
+/// task — so we drop it here rather than mis-scroll history under it.
+fn route_wheel(delta: i16) {
+    let Some(term) = WHEEL_TERM.get() else {
+        return;
+    };
+    if term.mouse_reporting_active() {
+        // App owns the wheel; mouse-event encoding is Wave-2. Drop (do not scroll).
+        probe("WHEEL", "dropped (app has mouse reporting active — Wave-2 encode)");
+        return;
+    }
+    // WHEEL_DELTA = 120 per notch; up (positive delta) scrolls into history
+    // (negative row delta per the vt's DELTA convention: up is negative).
+    let notches = f32::from(delta) / 120.0;
+    let rows = -(notches.round() as isize) * WHEEL_ROWS_PER_NOTCH;
+    if rows != 0 {
+        term.scroll_viewport(rows);
+        probe("WHEEL", &format!("scroll_viewport({rows}) (notches={notches:.2})"));
+    }
+}
+
+// ──────────────────── Win32 thread-hook focus/IME/key/wheel probe ────────────────────
 //
-// WinUI 3 delivers keyboard/IME input to its content-island *child* HWND
-// (the InputSite window), not the top-level window — a top-level subclass
-// never sees WM_CHAR (found in the first interactive run; the headless
-// self-test cannot catch it because it never gains focus). The probe is
-// therefore thread-scoped hooks: WH_GETMESSAGE observes posted messages
-// (keys, chars, IME) and WH_CALLWNDPROC observes sent messages (focus) for
-// EVERY window on the UI thread, whichever child owns focus. This is also
-// the shape M1's real input layer builds on.
+// WinUI 3 delivers input to its content-island *child* HWND (the InputSite
+// window), not the top-level window — a top-level subclass never sees WM_CHAR.
+// The probe is therefore thread-scoped hooks: WH_GETMESSAGE observes posted
+// messages (keys, chars, IME, mouse wheel) and WH_CALLWNDPROC observes sent
+// messages (focus) for EVERY window on the UI thread. This is the input layer
+// M1 builds on — including wheel routing, since reactor exposes no wheel event.
 
 /// Whether we've already installed the hooks (install exactly once).
 static HOOKS_INSTALLED: OnceLock<()> = OnceLock::new();
@@ -789,8 +816,6 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let vk = wparam.0 as u32;
             let sys = msg == WM_SYSKEYDOWN;
-            // T10: non-character keys (arrows/nav/F) produce no WM_CHAR — encode
-            // them here and forward to the live session, stamped for latency.
             if !sys {
                 if let (Some(key), Some(tx)) = (vk_to_key(vk), INPUT_TX.get()) {
                     let bytes = Encoder::new(EncMode::default())
@@ -819,18 +844,20 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
                 .map(|c| c.escape_default().to_string())
                 .unwrap_or_else(|| format!("U+{code:04X}"));
             probe("CHAR", &format!("U+{code:04X} '{ch}'"));
-            // T10: forward the committed character (incl. Win32-pretranslated
-            // control chars like Enter/Ctrl+C) into the session, stamped.
             if let (Some(bytes), Some(tx)) = (char_to_bytes(code), INPUT_TX.get()) {
                 let _ = tx.send((bytes, Instant::now()));
             }
+        }
+        WM_MOUSEWHEEL => {
+            // High word of wParam is the signed wheel delta (multiple of 120).
+            let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
+            route_wheel(delta);
         }
         WM_IME_STARTCOMPOSITION => {
             IME_COMPOSING.store(true, Ordering::SeqCst);
             probe("IME_START", "composition started");
         }
         WM_IME_COMPOSITION => {
-            // GCS_RESULTSTR bit means the string is being committed this message.
             const GCS_RESULTSTR: u32 = 0x0800;
             const GCS_COMPSTR: u32 = 0x0008;
             let flags = lparam.0 as u32;
@@ -845,10 +872,7 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
                     &format!("composition updated (GCS flags=0x{flags:04X})"),
                 );
             } else {
-                probe(
-                    "IME_UPDATE",
-                    &format!("composition msg flags=0x{flags:04X}"),
-                );
+                probe("IME_UPDATE", &format!("composition msg flags=0x{flags:04X}"));
             }
         }
         WM_IME_ENDCOMPOSITION => {
@@ -877,8 +901,9 @@ fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
     }
 }
 
-/// WH_GETMESSAGE hook: posted messages (keys, chars, IME) on the UI thread.
-/// Only PM_REMOVE retrievals are inspected so peeked messages don't log twice.
+/// WH_GETMESSAGE hook: posted messages (keys, chars, IME, wheel) on the UI
+/// thread. Only PM_REMOVE retrievals are inspected so peeked messages don't log
+/// twice.
 unsafe extern "system" fn getmessage_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 && wparam.0 as u32 == PM_REMOVE.0 {
         // SAFETY: for WH_GETMESSAGE with code >= 0, lparam points to a MSG.
@@ -898,8 +923,8 @@ unsafe extern "system" fn callwndproc_hook(code: i32, wparam: WPARAM, lparam: LP
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-/// Install the input probe as thread-scoped hooks on the UI thread. Called
-/// from the render tick (which runs on that thread); installs exactly once.
+/// Install the input probe as thread-scoped hooks on the UI thread. Called from
+/// the render tick (which runs on that thread); installs exactly once.
 fn install_input_probe() {
     if HOOKS_INSTALLED.get().is_some() {
         return;
@@ -919,7 +944,6 @@ fn install_input_probe() {
                 let _ = HOOKS_INSTALLED.set(());
             }
             (get_hook, call_hook) => {
-                // Partial success would double-install on retry — unhook first.
                 if let Ok(h) = get_hook {
                     let _ = UnhookWindowsHookEx(h);
                 }
@@ -991,8 +1015,6 @@ fn spawn_self_test_watchdog() {
                 "FAIL-panel-never-mounted"
             }
         );
-        // Flush and hard-exit; WinUI holds live COM refs so a clean Exit()
-        // fail-fasts (see reactor app.rs) — process::exit is the sanctioned path.
         use std::io::Write;
         let _ = std::io::stdout().flush();
         let _ = std::io::stderr().flush();
@@ -1005,7 +1027,7 @@ fn spawn_self_test_watchdog() {
 fn app(cx: &mut RenderCx) -> Element {
     let d3d = cx.use_ref::<Option<D3DState>>(None);
     let rendering = cx.use_ref::<Option<Rendering>>(None);
-    // T10: the end-to-end session (pwsh + vt). None in --self-test so the T7
+    // The end-to-end session (pwsh + shared vt). None in --self-test so the
     // hosting-evidence run stays session-free and deterministic.
     let session = cx.use_ref::<Option<TermSession>>(None);
 
@@ -1025,7 +1047,6 @@ fn app(cx: &mut RenderCx) -> Element {
             let d3d = d3d.clone();
             let session = session.clone();
             if let Ok(r) = on_rendering(move || {
-                // Late-install if the host wasn't ready on the first effect run.
                 install_input_probe();
                 if let Some(state) = d3d.borrow_mut().as_mut() {
                     state.render_frame(session.borrow_mut().as_mut());
@@ -1041,7 +1062,7 @@ fn app(cx: &mut RenderCx) -> Element {
     swap_chain_panel()
         // A reactor-native keyboard probe for comparison: accelerators DO fire
         // (Ctrl+K here), but they are the ONLY declarative keyboard surface —
-        // no raw keydown/char. Logged with the KEY prefix like the WM_ path.
+        // no raw keydown/char, and no wheel event (see route_wheel / the hook).
         .keyboard_accelerator(KeyboardAccelerator::new(
             VirtualKey(0x4B),            // 'K'
             VirtualKeyModifiers(0x0002), // Control
@@ -1051,10 +1072,7 @@ fn app(cx: &mut RenderCx) -> Element {
             let d3d = d3d.clone();
             move |panel| {
                 let (w, h) = panel.composition_scale().unwrap_or((1.0, 1.0));
-                probe(
-                    "HOST",
-                    &format!("panel mounted (composition_scale={w},{h})"),
-                );
+                probe("HOST", &format!("panel mounted (composition_scale={w},{h})"));
                 match create_d3d(&panel, 1280, 720) {
                     Ok(state) => {
                         d3d.set(Some(state));
@@ -1066,9 +1084,24 @@ fn app(cx: &mut RenderCx) -> Element {
         })
         .on_resize({
             let d3d = d3d.clone();
+            let session = session.clone();
             move |w, h| {
-                if let Some(state) = d3d.borrow_mut().as_mut() {
-                    state.resize(w as u32, h as u32);
+                let (w, h) = (w as u32, h as u32);
+                // Swapchain first (owns the back buffers we render into).
+                let metrics = if let Some(state) = d3d.borrow_mut().as_mut() {
+                    state.resize(w, h);
+                    state.cell_renderer.as_ref().map(|r| r.metrics())
+                } else {
+                    None
+                };
+                // Then drive cols/rows from cell metrics through the resize
+                // pipeline (ConPTY resize → vt resize). Skip until the renderer
+                // exists (its metrics define the cell size); the first content
+                // frame forces a present anyway.
+                if let (Some(metrics), Some(session)) =
+                    (metrics, session.borrow_mut().as_mut())
+                {
+                    session.request_resize(w, h, metrics);
                 }
             }
         })
@@ -1078,27 +1111,26 @@ fn app(cx: &mut RenderCx) -> Element {
 // ───────────────────────── entry point ─────────────────────────
 
 fn main() -> Result<()> {
-    // Buffer-independent banner (goes to stderr so stdout carries only SELFTEST).
     eprintln!(
-        "[BANSHEE-M0] Tier-A shell spike starting (mode={}). Reactor rev pinned in Cargo.toml.",
-        if mode() == Mode::SelfTest {
-            "self-test"
-        } else {
-            "interactive"
+        "[BANSHEE-M1] Phase 1 shell starting (mode={}). Reactor rev pinned in Cargo.toml.",
+        match mode() {
+            Mode::SelfTest => "self-test",
+            Mode::EchoSelfTest => "echo-selftest",
+            Mode::Interactive => "interactive",
         }
     );
 
-    // Framework-dependent: initialize the Windows App SDK bootstrap so WinUI 3
-    // can resolve the installed Microsoft.WindowsAppRuntime.2.x. If this fails,
-    // it is the UC-04 E1 "bootstrap failure" signal — surface it loudly.
+    // Initialize the Windows App SDK bootstrap so WinUI 3 can resolve the
+    // installed Microsoft.WindowsAppRuntime.2.x. If this fails, it is the UC-04
+    // E1 "bootstrap failure" signal — surface it loudly.
     if let Err(e) = windows_reactor::bootstrap() {
         eprintln!(
-            "[BANSHEE-M0] FATAL bootstrap() failed: {e}. This is UC-04 E1 territory \
+            "[BANSHEE-M1] FATAL bootstrap() failed: {e}. This is UC-04 E1 territory \
              (WinAppSDK runtime missing/mismatched). Install Microsoft.WindowsAppRuntime.2.x."
         );
         return Err(e);
     }
-    eprintln!("[BANSHEE-M0] bootstrap() ok — WinAppSDK runtime resolved.");
+    eprintln!("[BANSHEE-M1] bootstrap() ok — WinAppSDK runtime resolved.");
 
     if mode() == Mode::SelfTest {
         spawn_self_test_watchdog();
@@ -1118,8 +1150,8 @@ fn main() -> Result<()> {
     }
 
     App::new()
-        .title("Banshee M0 spike")
-        .backdrop(Backdrop::Mica) // Mica is trivially available on reactor's App.
+        .title("Banshee M1 shell")
+        .backdrop(Backdrop::Mica)
         .inner_size(1280.0, 720.0)
         .render(app)
 }
