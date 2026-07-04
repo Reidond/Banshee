@@ -110,10 +110,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Phase 1
 - **Files to modify**: `crates/term-input/src/{mouse,paste}.rs`, PTY writer flow control
 - **Acceptance criteria**:
-  - [ ] SGR/urxvt/X10 encodings per vt-reported mode; wheel→scrollback vs app-claimed routing
-  - [ ] Bracketed paste when requested; large-paste chunking with writer flow control (no unbounded buffering)
-- **Test requirements**: table-driven encoding tests; 10 MB paste test with memory ceiling assertion
-- **Status**: [ ] Not started
+  - [x] SGR/urxvt/X10 (+1005 UTF-8) encodings; `protocol_filter` gates reporting per mode; wheel→scrollback routing landed with Phase 1 integration
+  - [x] Bracketed paste with embedded-`ESC[201~` deletion (paste-injection guard); UTF-8-safe chunking; `write_paste` flow control = ConPTY blocking WriteFile
+- **Test requirements**: table-driven encoding tests; 10 MB paste test with memory ceiling assertion — 30 encoding/paste tests + 10 MB real-PTY test green (orchestrator-verified)
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 7: TSF IME integration
 

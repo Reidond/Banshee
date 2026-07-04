@@ -17,7 +17,13 @@ pub mod procwalk;
 pub mod resize;
 
 #[cfg(windows)]
+pub mod paste_write;
+
+#[cfg(windows)]
 pub use conpty::{AppliedResize, ConPty, ExitStatus, Shell};
 
 #[cfg(windows)]
 pub use resize::ResizePipeline;
+
+#[cfg(windows)]
+pub use paste_write::write_paste;

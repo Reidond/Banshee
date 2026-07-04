@@ -8,6 +8,9 @@ repository.workspace = true
 [dependencies]
 term-core = { path = "../term-core" }
 
+[dev-dependencies]
+term-input = { path = "../term-input" }
+
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61"
 features = [
