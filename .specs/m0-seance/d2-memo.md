@@ -91,7 +91,7 @@ is the consumption route until Microsoft publishes it. Re-verify at each milesto
 | app-shell.exe size (release) | 2,593,280 B | cargo build --release |
 | Golden encoder cases | 51 green | term-input golden rig |
 | vt vendor: x64 lib | 8,562,370 B, sha 4809d36d… | xtask vendor-vt |
-| Fuzz (feed boundary) | PENDING (T5 wiring; 1 CPU-h = nightly CI gate) | cargo-fuzz |
+| Fuzz (feed boundary) | **1 CPU-hour crash-free** (CI run 28690648143; 0 artifacts) + 90 s local smoke (53k execs) | cargo-fuzz, fuzz-nightly.yml |
 
 ## Exit review (independent, 2026-07-04)
 
@@ -112,6 +112,7 @@ files was needed — see .gitattributes); (4) orphan-walk PID-recycling caveat i
    avg/p95 (ESC to exit).
 3. Install PresentMon (`winget install Intel.PresentMon` or GitHub release) for the T10
    capture; archive the 60 s trace per tasks.md.
-4. CI: run `vendor-vt.yml` once to produce+pin the ARM64 lib; re-run `ci.yml` ARM64 job to
-   prove the link (local host lacks ARM64 MSVC CRT).
+4. ~~CI: vendor-vt for the ARM64 lib + ARM64 link proof~~ **DONE 2026-07-04** — vendor run
+   28690119497 (both arches, idempotent); link proven by `build (arm64)` on PR #2; fuzz
+   1 CPU-hour crash-free (run 28690648143); `main` protection requires both CI checks.
 5. Optional local ARM64: VS Installer → add "C++ ARM64 build tools".
