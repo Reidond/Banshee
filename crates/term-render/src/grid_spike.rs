@@ -1,5 +1,11 @@
 //! Animated colored cell-grid renderer (UC-04 step 3, SPEC §6.2 "Draw").
 //!
+//! **M1 note:** this is the legacy M0 spike. The real text renderer is
+//! [`crate::grid::CellRenderer`] (bg-run / glyph / decoration / overlay passes).
+//! [`GridRenderer`] is retained because the app-shell `--self-test` path and the
+//! `warp_smoke` test still drive its animated color grid as the no-session, GPU-only
+//! liveness check; new integration code should use `CellRenderer`.
+//!
 //! Instanced colored quads: one instance per grid cell. The vertex shader reads
 //! a per-cell color and rect from an instance buffer and expands a unit quad.
 //! Animation is a per-frame color phase advance (no external timing needed —

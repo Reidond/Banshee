@@ -64,11 +64,11 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Files to modify**: `crates/term-render/src/{text,atlas}.rs`
 - **Files NOT to modify**: ligature config / emoji atlas / box-glyph rasterizer (M2 boundary)
 - **Acceptance criteria**:
-  - [ ] DirectWrite family resolution + `IDWriteFontFallback` chains render Latin/Cyrillic/CJK without tofu for installed fonts
-  - [ ] HarfBuzz shaping over DirectWrite-loaded font data; R8 grayscale atlas with eviction
-  - [ ] Glyph pass integrated with bg-run and decoration passes; damage-driven present only
-- **Test requirements**: WARP screenshot-diff cases (ASCII grid, Cyrillic, CJK, SGR styles)
-- **Status**: [ ] Not started
+  - [x] DirectWrite family resolution + `IDWriteFontFallback` chains render Latin/Cyrillic/CJK without tofu for installed fonts
+  - [x] HarfBuzz shaping (rustybuzz 0.20, the HarfBuzz port — no C build) over DWrite-extracted sfnt bytes; R8 atlas (shelf pack, 512→2048 grow, LRU repopulate-on-evict)
+  - [x] `CellRenderer` passes: bg-runs, glyphs, decorations, overlays; `Frame::is_dirty` present-skip contract
+- **Test requirements**: WARP screenshot-diff cases (ASCII grid, Cyrillic, CJK, SGR styles) — 7 structural WARP tests + 6 overlay units green (orchestrator-verified)
+- **Status**: [x] Done (2026-07-04)
 
 ### Task 3: Scrollback wiring
 
@@ -213,3 +213,5 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 | T1 | Consumer-side wiring in term-render deferred to T2/integration; T1 scoped to term-core to keep Wave 1a writers disjoint. | Orchestration file-partitioning; the exposed contract is exactly what term-render will call. |
 | T4 | `ConPty` gained `unsafe impl Sync` (needed for `Arc<ConPty>` in ResizePipeline). Orchestrator hardened it: `exit_rx` wrapped in `Mutex` so the impl doesn't rely on `mpsc::Receiver` internals beyond its `!Sync` contract. | Soundness: std does not promise concurrent `try_recv` via `&Receiver` is safe; mutex makes the claim locally provable. |
 | T4 | No latest-wins race found in the M0 coalescer (storm-verified); debounce kept at 50 ms, now documented against SPEC §6.5. | Investigated per brief; documented in struct docs to avoid re-litigating. |
+| T2 | Glyph rasterization needs `IDWriteFactory2` grayscale analysis (base-factory ClearType analysis returns empty R8 bounds); base `ALIASED` kept as fallback. | Found empirically — first test run failed on the base overload. |
+| T2 | Curly/Dotted/Dashed underlines are segmented-rect approximations (no undercurl shader); renderer consumes `GridSnapshot`, not the T1 `RenderState` iterator — conversion isolated in one module for the swap at integration. `grid_spike.rs` kept for app-shell `--self-test`. | v1 scope; parallel-writer partitioning. Iterator migration is a Phase 1 exit integration item. |
