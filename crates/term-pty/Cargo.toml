@@ -1,0 +1,32 @@
+[package]
+name = "term-pty"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+]
+
+[[example]]
+name = "echo_spike"
+
+# Helper test binary used by the orphan-check lifecycle test (UC-03 E3).
+# It spawns a child shell under the kill-on-close job object and then idles,
+# so the test can TerminateProcess() it hard and assert no orphans survive.
+[[bin]]
+name = "orphan_helper"
+path = "src/bin/orphan_helper.rs"

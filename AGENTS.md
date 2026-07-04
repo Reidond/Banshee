@@ -1,24 +1,15 @@
 # AGENTS.md
 
+> Bootstrapped by [lemmi-ai-kit](https://github.com/lemmi-ukraine/lemmi-ai-kit)
+
 ## Commands
 
 > TODO(project): replace with this project's real commands (dependency sync, lint,
 > format, type-check, test, run). Keep them copy-pasteable from the repository root.
 
-```bash
-uv sync --dev
-uv run ruff check .
-uv run ruff format .
-uv run basedpyright
-uv run pytest tests/
-```
-
 ## Conventions
 
 > TODO(project): document project structure and code conventions here.
-> If the `python` profile is installed, the shared Lemmi conventions live in the
-> `lemmi-python-conventions`, `lemmi-vertical-slice`, and `lemmi-test-conventions` skills —
-> keep this section for what is specific to THIS project.
 
 ### Task documents (`tasks/`)
 - One task per markdown file; keep focused on a single problem.
@@ -151,14 +142,6 @@ Uses: research-source-planner (task), research-source-claim (task), parallel-dee
 - Start implementing bug fixes without presenting a brief plan first — even for "quick" fixes. If the fix touches more than 1 file or involves data flow changes, write a plan and get approval before coding.
 - Modify AI prompt templates without running `/review-prompts` or explicitly getting user approval to skip the review.
 - Treat task docs as runtime configuration, or let tasks drift from current implementation without updating status.
-
-### Python rules (projects using the `python` profile)
-- Use `str()` on `str, Enum` subclasses to extract values — use `.value` instead (Python 3.11 breaking change).
-- Use `.value` on enum-typed fields in models with `use_enum_values=True` — these fields are already strings at runtime.
-- Use `cast(Any, ...)` to pass objects between layers with different models — perform explicit type conversion instead.
-- Use `if TYPE_CHECKING:` import guards to break an import cycle or type a back-reference — resolve the cycle structurally instead (narrow `Protocol`, neutral module, inverted dependency). See the `lemmi-python-conventions` skill.
-- Use blocking I/O inside async flows.
-- Make real external API calls in tests, or patch concrete clients instead of using protocol-based DI overrides.
 
 ### Project rules
 > TODO(project): add project-specific do-nots here as they are discovered

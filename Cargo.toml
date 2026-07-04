@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/banshee-terminal/banshee"
+
+# ── One `windows` crate instance for the whole workspace (T10 finding) ──
+# app-shell consumes windows-reactor as a git dependency (not on crates.io), and
+# reactor's `Interface` bounds only accept types from ITS windows-core instance.
+# term-render depends on registry `windows 0.62`. Without this patch the graph
+# carries two windows/windows-core copies whose types don't unify, and
+# term-render's IDXGISwapChain1 cannot be passed to reactor's set_swap_chain.
+# Same versions, same code — just forced to resolve to the one git checkout.
+# Drop this section when Microsoft publishes windows-reactor to crates.io.
+[patch.crates-io]
+windows = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-core = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-collections = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-future = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-implement = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-interface = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-link = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-numerics = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-result = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-strings = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }
+windows-threading = { git = "https://github.com/microsoft/windows-rs", rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f" }

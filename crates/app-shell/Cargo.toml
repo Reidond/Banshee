@@ -1,0 +1,65 @@
+[package]
+name = "app-shell"
+# Reactor is edition-2024; consuming it from a 2021 crate is fine, but the
+# spike itself uses `let ... else` / `if let ... &&` chains, so 2021 is enough.
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# ── Tier-A shell spike (T7 / UC-04 / Gherkin "keyboard focus and text input") ──
+# windows-reactor is NOT on crates.io (0.0.0 placeholder). It lives in the
+# windows-rs monorepo at crates/libs/reactor and must be consumed as a git dep.
+# The rev below is microsoft/windows-rs master HEAD resolved at task time
+# (T7, 2026-07-04). Recorded verbatim in the D2 memo evidence.
+[dependencies.windows-reactor]
+git = "https://github.com/microsoft/windows-rs"
+rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f"
+
+# The full `windows` crate provides D3D11 / DXGI for the composition swapchain
+# and Win32 (message hooking, HWND) for the keyboard/IME/focus probe. Reactor
+# pins its own `windows` via the monorepo workspace; we depend on the published
+# crate for the Win32/graphics surface the sample also uses.
+[dependencies.windows]
+# MUST come from the SAME git rev as windows-reactor, not crates.io: reactor
+# depends on its monorepo `windows-core` via a path dep inside the git checkout,
+# which is a DIFFERENT crate instance than registry windows-core 0.62.2. If they
+# don't unify, IDXGISwapChain1 does not implement reactor's `Interface` trait and
+# `panel.set_swap_chain` won't accept it. Pinning windows itself to the git rev
+# makes both resolve to the one checkout copy. (This is the UC-04 E1 "one fix
+# iteration" — the classic two-windows-core mismatch, resolved.)
+git = "https://github.com/microsoft/windows-rs"
+rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f"
+default-features = false
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Ime",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+]
+
+[dependencies.windows-core]
+git = "https://github.com/microsoft/windows-rs"
+rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f"
+
+# ── T10 end-to-end integration: engine crates wired into the shell ──
+# (The root [patch.crates-io] unifies these crates' `windows` dependency with
+# reactor's git copy, so D3D types flow across the seam.)
+[dependencies]
+term-core = { path = "../term-core" }
+term-input = { path = "../term-input" }
+term-pty = { path = "../term-pty" }
+term-render = { path = "../term-render" }
+
+# Stages the Windows App SDK bootstrap DLL next to the exe (framework-dependent:
+# consumes the machine-installed Microsoft.WindowsAppRuntime.2.x — verified
+# present as 2.2.0.0 on the reference machine). No network at build time.
+[build-dependencies.windows-reactor-setup]
+git = "https://github.com/microsoft/windows-rs"
+rev = "a4f7b2cb7c63c6bb7fc77a2affe57145be1d8c4f"

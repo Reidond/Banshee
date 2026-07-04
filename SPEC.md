@@ -43,6 +43,17 @@ The AI layer is **agent-first**: an embedded agent pane speaks the **Agent Clien
 
 This section pins the external facts the design depends on. Re-verify each at milestone boundaries; the ecosystem moves fast.
 
+> **M0 exit re-verification (2026-07-04, from primary sources):** libghostty-vt builds
+> on Windows at pinned commit `d560c645` with Zig 0.15.2 via `-Demit-lib-vt`
+> (`x86_64/aarch64-windows-msvc`; static lib `ghostty-vt-static.lib`); upstream PR #13151
+> shows the *shared*-lib MSVC CRT path is broken/in-flux — stay on the static lib.
+> `windows-reactor` is real but **git-only** (crates.io holds a 0.0.0 placeholder);
+> consumed via rev pin `a4f7b2cb`. It hosts SwapChainPanel-attached composition
+> swapchains but exposes **no keyboard/char/focus/IME API** (stubs) — input is
+> shell-owned Win32+TSF per §6.3, confirmed not just assumed. ConPTY quirks list
+> validated: process-handle exit wait works (µs-scale), by-value HPCON attribute and
+> NULL-stdhandle traps documented in term-pty. Full evidence: `.specs/m0-seance/d2-memo.md`.
+
 **Ghostty / libghostty.**
 - Upstream Ghostty explicitly does **not** plan a Windows app (restated in the 1.3.0 release notes, March 2026). Their stated position: a capable libghostty is the path that enables Windows support, and "libghostty itself already supports Windows."
 - **libghostty-vt** is the first shipped component: a zero-dependency (no libc) C/Zig library for VT sequence parsing + terminal state (cursor, styles, wrapping, scrollback). Officially compatible with **macOS, Linux, Windows, WASM**. Functionality is battle-proven, but **API signatures are in flux and no version is tagged yet**. Docs: Doxygen site; examples repo + "Ghostling" reference project + `awesome-libghostty`.

@@ -1,0 +1,27 @@
+[package]
+name = "term-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Detached from the root workspace glob (`members = ["crates/*", "xtask"]`
+# would otherwise try to pull this fuzz crate's own dependency graph — with
+# its pinned nightly-only libfuzzer-sys feature requirements — into the
+# stable-toolchain workspace resolve). An empty `[workspace]` table makes this
+# its own workspace root, which is the standard `cargo fuzz` pattern.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+term-core = { path = ".." }
+ghostty-vt-sys = { path = "../../ghostty-vt-sys" }
+
+[[bin]]
+name = "feed"
+path = "fuzz_targets/feed.rs"
+test = false
+doc = false
+bench = false

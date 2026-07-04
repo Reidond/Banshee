@@ -1,0 +1,48 @@
+## initial fill
+# meta
+cols=20 rows=6
+cursor=5,5 visible=true style=Block
+
+# grid
+line0···············
+line1···············
+line2···············
+line3···············
+line4···············
+line5···············
+
+# attrs
+(none)
+
+## after scroll up (region 2-4)
+# meta
+cols=20 rows=6
+cursor=0,1 visible=true style=Block
+
+# grid
+line0···············
+line2···············
+line3···············
+····················
+line4···············
+line5···············
+
+# attrs
+(none)
+
+## after scroll down (region 2-4)
+# meta
+cols=20 rows=6
+cursor=0,1 visible=true style=Block
+
+# grid
+line0···············
+····················
+line2···············
+line3···············
+line4···············
+line5···············
+
+# attrs
+(none)
+

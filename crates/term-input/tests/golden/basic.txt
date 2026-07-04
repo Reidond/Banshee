@@ -1,0 +1,100 @@
+# Golden table for term-input legacy xterm encoding (Task 9).
+#
+# Format: one case per non-comment, non-blank line:
+#   name | key spec | mods | text | mode | expected bytes (hex)
+#
+# Columns:
+#   name        - unique test case identifier (snake_case)
+#   key spec    - `Char(<char>)`, or one of: Enter Tab Backspace Escape
+#                 Up Down Left Right Home End PageUp PageDown Insert
+#                 Delete, or `F(<n>)`
+#   mods        - `-` for none, or `+`-joined subset of SHIFT CTRL ALT
+#                 ALT_GR, e.g. `CTRL+ALT`
+#   text        - `-` for None, or the literal committed text (may be
+#                 empty string written as `""`), UTF-8
+#   mode        - `normal` or `appcursor` (application cursor keys)
+#   expected    - `-` for "no bytes produced" (encode returns empty),
+#                 else lowercase hex bytes, no separators, e.g. 1b5b41
+#
+# Full Kitty protocol matrix is deferred to M1 (SPEC §6.3); this table
+# covers the legacy/basic set plus the Windows-relevant AltGr and
+# dead-key contrast cases called out in tasks.md Task 9.
+
+# --- printable / basic controls ---
+printable_a | Char(a) | - | a | normal | 61
+printable_shift_a_text | Char(a) | SHIFT | A | normal | 41
+enter | Enter | - | - | normal | 0d
+tab | Tab | - | - | normal | 09
+backspace | Backspace | - | - | normal | 7f
+escape | Escape | - | - | normal | 1b
+
+# --- arrows: normal mode (CSI) ---
+up_normal | Up | - | - | normal | 1b5b41
+down_normal | Down | - | - | normal | 1b5b42
+right_normal | Right | - | - | normal | 1b5b43
+left_normal | Left | - | - | normal | 1b5b44
+
+# --- arrows: application cursor keys mode (SS3) ---
+up_appcursor | Up | - | - | appcursor | 1b4f41
+down_appcursor | Down | - | - | appcursor | 1b4f42
+right_appcursor | Right | - | - | appcursor | 1b4f43
+left_appcursor | Left | - | - | appcursor | 1b4f44
+
+# --- arrows: modifier parameterization (classic xterm: shift=1 alt=2 ctrl=4, +1) ---
+up_shift | Up | SHIFT | - | normal | 1b5b313b3241
+up_ctrl | Up | CTRL | - | normal | 1b5b313b3541
+up_alt | Up | ALT | - | normal | 1b5b313b3341
+up_ctrl_shift | Up | CTRL+SHIFT | - | normal | 1b5b313b3641
+up_shift_appcursor | Up | SHIFT | - | appcursor | 1b5b313b3241
+
+# --- Home/End ---
+home_normal | Home | - | - | normal | 1b5b48
+end_normal | End | - | - | normal | 1b5b46
+home_appcursor | Home | - | - | appcursor | 1b4f48
+end_appcursor | End | - | - | appcursor | 1b4f46
+
+# --- PageUp/PageDown ---
+page_up | PageUp | - | - | normal | 1b5b357e
+page_down | PageDown | - | - | normal | 1b5b367e
+page_up_shift | PageUp | SHIFT | - | normal | 1b5b353b327e
+
+# --- Insert/Delete ---
+insert | Insert | - | - | normal | 1b5b327e
+delete | Delete | - | - | normal | 1b5b337e
+
+# --- F1-F4: SS3 ---
+f1 | F(1) | - | - | normal | 1b4f50
+f2 | F(2) | - | - | normal | 1b4f51
+f3 | F(3) | - | - | normal | 1b4f52
+f4 | F(4) | - | - | normal | 1b4f53
+f1_shift | F(1) | SHIFT | - | normal | 1b5b313b3250
+
+# --- F5-F12: CSI tilde ---
+f5 | F(5) | - | - | normal | 1b5b31357e
+f6 | F(6) | - | - | normal | 1b5b31377e
+f7 | F(7) | - | - | normal | 1b5b31387e
+f8 | F(8) | - | - | normal | 1b5b31397e
+f9 | F(9) | - | - | normal | 1b5b32307e
+f10 | F(10) | - | - | normal | 1b5b32317e
+f11 | F(11) | - | - | normal | 1b5b32337e
+f12 | F(12) | - | - | normal | 1b5b32347e
+
+# --- Ctrl+letter / named specials ---
+ctrl_a | Char(a) | CTRL | - | normal | 01
+ctrl_z | Char(z) | CTRL | - | normal | 1a
+ctrl_space | Char( ) | CTRL | - | normal | 00
+ctrl_bracket | Char([) | CTRL | - | normal | 1b
+
+# --- Alt+char (Meta, ESC-prefixed) — plain ALT only, never ALT_GR ---
+alt_char_b | Char(b) | ALT | b | normal | 1b62
+
+# --- AltGr: text-only, no ESC, no Ctrl-masking (SPEC 6.3 AltGr trap) ---
+altgr_q_at_sign | Char(q) | ALT_GR | @ | normal | 40
+altgr_e_euro | Char(e) | ALT_GR | € | normal | e282ac
+
+# --- Ctrl+Alt WITHOUT text: ESC-prefixed control byte (contrast case) ---
+ctrl_alt_e_no_text | Char(e) | CTRL+ALT | - | normal | 1b05
+
+# --- dead-key flow: press produces no event bytes, composed result is its own Char event ---
+dead_circumflex_noop | Char(^) | - | - | normal | -
+composed_a_circumflex | Char(a) | - | â | normal | c3a2

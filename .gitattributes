@@ -1,0 +1,8 @@
+# Golden/test-data files are compared byte-for-byte by test harnesses —
+# force LF on checkout so core.autocrlf=true machines (incl. GitHub windows
+# runners) don't rewrite them to CRLF and break the comparisons.
+*.golden text eol=lf
+crates/term-input/tests/golden/** text eol=lf
+
+# Vendored artifacts are checksummed — never let git touch their bytes.
+vendor/** -text
