@@ -37,6 +37,7 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Exit criteria**: UC-01 flows green including E1–E4; config hot-reload scenarios green; WSL + Windows profiles both daily-usable
 - **Quality gate**: Standard
 - **Tasks**: 8, 9, 10, 11
+- **Status**: ✅ **EXITED 2026-07-04.** UC-01 E1–E4 test-covered; hot-reload scenarios green (33 config tests); pwsh + WSL Ubuntu profiles both spawn (interactive WSL spawn verified; echo-selftest pinned to builtin pwsh for determinism — WSL cold-start races the headless deadline, documented deviation).
 
 ### Phase 4 (Final): Daily-driver hardening and gates
 
@@ -167,10 +168,10 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Tasks 8, 9, 10
 - **Files to modify**: `crates/layout/src/session.rs`, `crates/term-pty/src/{env,exit}.rs`
 - **Acceptance criteria**:
-  - [ ] Sanitized env + `TERM_PROGRAM`/`COLORTERM`/session GUID; exit code + duration surfaced; E1/E3/E4 flows green
-  - [ ] 100 open/close cycles leave zero orphans/zombie handles (NFR reliability)
-- **Test requirements**: scripted lifecycle test in CI
-- **Status**: [ ] Not started
+  - [x] Sanitized env + `TERM_PROGRAM`/`COLORTERM`/`BANSHEE_SESSION_ID` (CoCreateGuid); `ExitReport` E1 (command line named)/E2 (WSL classified + restart hint)/E3 (profile snapshot at open)/E4 (kill = Exited+code, documented); OSC 7 cwd via native `GHOSTTY_TERMINAL_DATA_PWD` query (`osc7.rs` parses file:// URIs)
+  - [x] 100 open/close cycles: 0 orphans, handle count flat (219→219), 6.5 s — orchestrator-rerun
+- **Test requirements**: scripted lifecycle test in CI — in `layout/tests/lifecycle_cycles.rs`, not ignored (<60 s)
+- **Status**: [x] Done (2026-07-04) — Phase 3 integration included (ConfigService+ProfileSet+Session wired into app-shell; hot-reload applies clipboard gates/font; scrollback-limit new-sessions-only, documented; diagnostics to stderr+OutputDebugString; in-pane death banner)
 
 ### Task 12: Selection + clipboard
 

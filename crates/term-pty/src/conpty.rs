@@ -29,6 +29,7 @@
 #![cfg(windows)]
 
 use std::io;
+use std::os::windows::ffi::OsStrExt;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -74,6 +75,90 @@ impl Shell {
             Shell::Cmd => "cmd.exe".to_string(),
         }
     }
+}
+
+/// A generalized spawn request (M1 Task 11): command + args + cwd + env,
+/// decoupled from the built-in [`Shell`] enum so `layout` can drive spawning
+/// from a resolved profile.
+///
+/// This type lives in `term-pty` (not `layout`) because the dependency edge
+/// runs `layout -> term-pty`; `layout::LaunchSpec` converts *into* this via a
+/// `From` adapter (see `layout::profile`). Kept deliberately minimal — the
+/// exact `CreateProcessW`-level assembly (command-line quoting, env block
+/// encoding, cwd application) is `term-pty`'s job.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpawnSpec {
+    /// The executable to launch (e.g. `wsl.exe`, `pwsh.exe`). Looked up on
+    /// `PATH` by `CreateProcessW` when not an absolute path.
+    pub command: String,
+    /// Arguments, each a separate element (quoting is applied per-arg here).
+    pub args: Vec<String>,
+    /// Working directory for the spawned process, or `None` to inherit
+    /// Banshee's. For WSL specs the cwd is expressed via `--cd` in `args`, not
+    /// here (see `layout::ResolvedProfile::launch_spec`).
+    pub cwd: Option<std::path::PathBuf>,
+    /// The **complete** child environment (already sanitized + overlaid by
+    /// [`crate::env::build_child_env`]). When empty, the child inherits
+    /// Banshee's environment.
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+impl SpawnSpec {
+    /// The display command line (command + args, space-joined with minimal
+    /// quoting) — used in E1 spawn-failure messages and diagnostics.
+    #[must_use]
+    pub fn command_line(&self) -> String {
+        let mut parts = Vec::with_capacity(1 + self.args.len());
+        parts.push(quote_arg(&self.command));
+        for a in &self.args {
+            parts.push(quote_arg(a));
+        }
+        parts.join(" ")
+    }
+}
+
+/// Quote a single command-line argument for `CreateProcessW` (and for display).
+///
+/// Applies the standard MSVCRT rule: wrap in double quotes when the arg is
+/// empty or contains whitespace/quotes, escaping embedded backslashes-before-a-
+/// quote and the quote itself. This is the same algorithm `std`'s
+/// `CommandExt` uses; we reimplement it because we assemble the raw command
+/// line ourselves (ConPTY needs a single `lpCommandLine`, not argv).
+fn quote_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.contains(['"', ' ', '\t']) {
+        return arg.to_string();
+    }
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => {
+                backslashes += 1;
+            }
+            '"' => {
+                // Escape all pending backslashes (they precede a quote) + the quote.
+                for _ in 0..=backslashes {
+                    out.push('\\');
+                }
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push(ch);
+            }
+        }
+    }
+    // Trailing backslashes precede the closing quote: double them.
+    for _ in 0..(backslashes * 2) {
+        out.push('\\');
+    }
+    out.push('"');
+    out
 }
 
 /// The result of a child exit, surfaced via the exit channel (UC-03 step 6).
@@ -136,6 +221,10 @@ pub struct ConPty {
     hpcon: HPCON,
     process: OwnedHandle,
     thread: OwnedHandle,
+    /// The child's process id (`PROCESS_INFORMATION::dwProcessId`). Stable for
+    /// the process's lifetime; used by the lifecycle reliability test to assert
+    /// the child is gone after close (via `OpenProcess`).
+    child_pid: u32,
     /// Our end of the input pipe: writing here sends bytes to the child stdin.
     write_handle: HANDLE,
     /// Reader thread draining the output pipe until EOF.
@@ -176,7 +265,61 @@ impl ConPty {
     ///
     /// `on_output` is invoked on the reader thread with each chunk of PTY output
     /// (raw VT bytes). Keep it cheap and non-blocking.
+    ///
+    /// Backward-compatible entry point (M0): builds a [`SpawnSpec`] from the
+    /// built-in shell's command line with an inherited environment, then
+    /// delegates to [`ConPty::spawn_spec`]. Prefer `spawn_spec` for
+    /// profile-driven launches (custom command/args/cwd/env).
     pub fn spawn<F>(shell: Shell, cols: i16, rows: i16, on_output: F) -> io::Result<Self>
+    where
+        F: FnMut(&[u8]) + Send + 'static,
+    {
+        // The built-in shells carry their flags in one command-line string
+        // (`pwsh.exe -NoLogo -NoProfile`). Preserve that exact command line by
+        // spawning it verbatim rather than re-quoting split args.
+        Self::spawn_command_line(&shell.command_line(), None, None, cols, rows, on_output)
+    }
+
+    /// Spawn from a [`SpawnSpec`] (M1 Task 11, UC-01 step 3): a resolved
+    /// command + args + cwd + sanitized env. This is the profile-driven path
+    /// `layout::Session` uses.
+    ///
+    /// The command line is assembled from `command` + `args` with per-arg
+    /// quoting; `env` (when non-empty) becomes the child's complete environment
+    /// via a `CREATE_UNICODE_ENVIRONMENT` block; `cwd` sets the child's working
+    /// directory. On spawn failure (E1) the pseudoconsole is closed and **no
+    /// reader thread is started** — the error is returned with nothing left
+    /// running.
+    pub fn spawn_spec<F>(
+        spec: &SpawnSpec,
+        cols: i16,
+        rows: i16,
+        on_output: F,
+    ) -> io::Result<Self>
+    where
+        F: FnMut(&[u8]) + Send + 'static,
+    {
+        Self::spawn_command_line(
+            &spec.command_line(),
+            spec.cwd.as_deref(),
+            crate::env::encode_env_block(&spec.env),
+            cols,
+            rows,
+            on_output,
+        )
+    }
+
+    /// Core spawn: a fully-assembled command-line string, optional cwd, optional
+    /// pre-encoded env block. Both public entry points funnel here so the
+    /// pipe/job/waiter setup lives in exactly one place.
+    fn spawn_command_line<F>(
+        command_line: &str,
+        cwd: Option<&std::path::Path>,
+        env_block: Option<Vec<u16>>,
+        cols: i16,
+        rows: i16,
+        on_output: F,
+    ) -> io::Result<Self>
     where
         F: FnMut(&[u8]) + Send + 'static,
     {
@@ -202,14 +345,33 @@ impl ConPty {
         let (startup_info, attr_buf) = build_startup_info(hpcon)?;
 
         // --- Spawn the child SUSPENDED so we can job-assign before it runs. ---
-        let mut cmd: Vec<u16> = shell
-            .command_line()
+        let mut cmd: Vec<u16> = command_line
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
+        // Optional cwd as a NUL-terminated wide string.
+        let cwd_wide: Option<Vec<u16>> = cwd.map(|p| {
+            p.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        });
+        let cwd_ptr: PWSTR = match &cwd_wide {
+            Some(w) => w.as_ptr() as PWSTR,
+            None => std::ptr::null_mut(),
+        };
+        // Optional env block. `env_ptr` is null when inheriting.
+        let mut env_block = env_block;
+        let env_ptr: *const core::ffi::c_void = match &mut env_block {
+            Some(b) => b.as_ptr().cast(),
+            None => std::ptr::null(),
+        };
+
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: startup_info + cmd buffer are valid for the call; environment
-        // is inherited (null) with a unicode-environment flag set.
+        // SAFETY: startup_info + cmd buffer are valid for the call; the env
+        // block (when present) is a valid double-NUL-terminated UTF-16 block
+        // with the unicode-environment flag set; cwd_ptr is a valid NUL-
+        // terminated wide string or null (inherit).
         let ok = unsafe {
             CreateProcessW(
                 std::ptr::null(),
@@ -218,8 +380,8 @@ impl ConPty {
                 std::ptr::null(),
                 0, // do NOT inherit handles: the PTY attribute wires std handles
                 EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                std::ptr::null(),
-                std::ptr::null(),
+                env_ptr as *mut core::ffi::c_void,
+                cwd_ptr,
                 std::ptr::addr_of!(startup_info).cast(),
                 &mut pi,
             )
@@ -231,13 +393,16 @@ impl ConPty {
 
         if ok == 0 {
             let err = io::Error::last_os_error();
-            // SAFETY: hpcon valid; nothing reads the output pipe yet.
+            // SAFETY: hpcon valid; nothing reads the output pipe yet — E1's
+            // "no reader threads started" guarantee holds because we return
+            // before spawn_reader below.
             unsafe { ClosePseudoConsole(hpcon) };
             return Err(err);
         }
 
         let process = OwnedHandle(pi.hProcess);
         let thread = OwnedHandle(pi.hThread);
+        let child_pid = pi.dwProcessId;
 
         // --- Job object: assign the suspended child, THEN resume it. ---
         let job = JobObject::new()?;
@@ -286,6 +451,7 @@ impl ConPty {
             hpcon,
             process,
             thread,
+            child_pid,
             write_handle: input_write.into_raw(),
             reader,
             wait_handle,
@@ -300,6 +466,32 @@ impl ConPty {
     /// Write raw bytes to the child's stdin (writer handle). Blocking.
     pub fn write(&self, data: &[u8]) -> io::Result<()> {
         write_all(self.write_handle, data)
+    }
+
+    /// The child process id. Stable for the process's lifetime. Used by the
+    /// lifecycle reliability test to verify (via `OpenProcess`) that the child
+    /// is truly gone after the session closes — the job-object kill-on-close
+    /// guarantee (UC-01 postcondition: no orphaned processes).
+    #[must_use]
+    pub fn child_pid(&self) -> u32 {
+        self.child_pid
+    }
+
+    /// Explicitly terminate the child process now (UC-01 `Session::kill`).
+    ///
+    /// Best-effort `TerminateProcess` on the child's process handle. The
+    /// kill-on-close job object still guarantees the whole tree is reaped when
+    /// this `ConPty` finally drops; `terminate` just makes the top-level child
+    /// die promptly without waiting for the drop, which the 100-cycle
+    /// reliability test relies on to keep each cycle short. Safe to call more
+    /// than once (a second call on an already-dead process is a harmless no-op).
+    pub fn terminate(&self) {
+        // SAFETY: valid process handle for the lifetime of `self`. Exit code
+        // 1 is conventional for an externally-terminated process; the waiter
+        // then surfaces it as a normal exit (E4).
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(self.process.0, 1);
+        }
     }
 
     /// Request a resize to `(cols, rows)`. Coalesced behind a ~50 ms debounce:

@@ -80,7 +80,7 @@ palette = [
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `scrollback-limit` | integer (bytes) | `12000000` | **This is a byte budget, not a line count.** libghostty-vt evicts scrollback by page, not by line, so retention is governed by memory, not line count. The default (~12 MB) retains roughly 10.9k 80-column lines — chosen empirically during M1 Task 3 to comfortably clear the "≥10k lines retrievable" requirement with headroom under the 80 MB idle-memory budget. |
+| `scrollback-limit` | integer (bytes) | `12000000` | **This is a byte budget, not a line count.** libghostty-vt evicts scrollback by page, not by line, so retention is governed by memory, not line count. The default (~12 MB) retains roughly 10.9k 80-column lines — chosen empirically during M1 Task 3 to comfortably clear the "≥10k lines retrievable" requirement with headroom under the 80 MB idle-memory budget. **Hot-reload note (M1 Task 11):** the scrollback budget is a vt *construction-time* parameter, so a changed `scrollback-limit` applies to **newly opened sessions only** — sessions already running keep the budget they were created with. `font-family`, `font-size`, and the clipboard gates, by contrast, apply live to the running session on reload. |
 
 ```toml
 scrollback-limit = 20000000

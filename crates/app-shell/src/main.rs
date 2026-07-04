@@ -31,16 +31,16 @@ mod clipboard;
 mod ime;
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use term_core::{
-    CellWidth, GridSnapshot, SelectionMode, SharedTerminal, Terminal, VtOptions,
-};
+use config::{ClipboardReadPolicy, ConfigService};
+use layout::{ProfileSet, Session};
+use term_core::{CellWidth, GridSnapshot, SelectionMode, SharedTerminal};
 use term_input::{Encoder, Key, KeyEvent, Mode as EncMode, Modifiers};
-use term_pty::{ConPty, ResizePipeline, Shell};
+use term_pty::{ExitCause, ExitReport};
 use term_render::{CellRenderer, GridRenderer};
 
 use windows::core::Interface;
@@ -61,9 +61,97 @@ use windows_reactor::{
 /// How long `--self-test` runs before force-exiting with a summary.
 const SELF_TEST_SECS: u64 = 5;
 
-/// Font em size (device px) for the real cell renderer. Matches the term-render
-/// WARP text test so cell metrics are consistent with proven-good geometry.
+/// Fallback font em size (device px) when config has not been applied yet.
+/// Matches the term-render WARP text test so cell metrics are consistent with
+/// proven-good geometry.
 const FONT_PX: f32 = 18.0;
+
+// ── PHASE3-INTEGRATION: config-driven font state ──
+//
+// The render tick recreates the CellRenderer when font family/size change
+// (config hot reload). The hook procs / render loop are not `TermSession`
+// methods, so the effective font config is published to process globals the
+// render tick reads. `FONT_SIZE_BITS` holds an f32 (px em) as bits;
+// `FONT_DIRTY` is set when either family or size changed and cleared once the
+// renderer is recreated. The family lives behind a Mutex (variable length).
+static FONT_SIZE_BITS: AtomicU32 = AtomicU32::new(0);
+static FONT_DIRTY: AtomicBool = AtomicBool::new(false);
+static FONT_FAMILY: Mutex<Option<String>> = Mutex::new(None);
+
+/// Publish the effective font config from a resolved [`config::Config`].
+/// Sets [`FONT_DIRTY`] when the values differ from what's currently published,
+/// so the render tick recreates the renderer exactly when needed.
+fn publish_font_config(family: &str, px_size: f32) {
+    let mut changed = false;
+    {
+        let mut guard = FONT_FAMILY.lock().unwrap();
+        if guard.as_deref() != Some(family) {
+            *guard = Some(family.to_string());
+            changed = true;
+        }
+    }
+    let bits = px_size.to_bits();
+    if FONT_SIZE_BITS.swap(bits, Ordering::SeqCst) != bits {
+        changed = true;
+    }
+    if changed {
+        FONT_DIRTY.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The effective font (family, px_size) for the renderer. Falls back to the
+/// built-in defaults until config publishes real values.
+fn effective_font() -> (String, f32) {
+    let family = FONT_FAMILY
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "Consolas".to_string());
+    let bits = FONT_SIZE_BITS.load(Ordering::SeqCst);
+    let px = if bits == 0 { FONT_PX } else { f32::from_bits(bits) };
+    (family, px)
+}
+
+/// PHASE3-INTEGRATION: push the config's OSC 52 clipboard gates into the vt.
+/// Maps `config::ClipboardReadPolicy` → `term_core::ClipboardReadPolicy` and
+/// forwards the write size cap.
+fn apply_clipboard_policy(term: &SharedTerminal, cfg: &config::Config) {
+    let read = match cfg.clipboard_read {
+        ClipboardReadPolicy::Deny => term_core::ClipboardReadPolicy::Deny,
+        ClipboardReadPolicy::Allow => term_core::ClipboardReadPolicy::Allow,
+    };
+    term.set_clipboard_policy(read, cfg.clipboard_write_max_bytes);
+}
+
+/// PHASE3-INTEGRATION: diagnostics surface (Observability NFR). Least-churn
+/// visible mechanism for M1: config warnings/errors go to **stderr** (grep-able
+/// with the rest of the probe stream) *and* the Windows debugger output
+/// (`OutputDebugStringW`, visible in DebugView / the VS output window) so a
+/// malformed config is visible even when stderr is not attached. A richer
+/// in-pane overlay is deferred to M2 (documented in design.md Q-diagnostics).
+fn surface_diagnostics(config: &ConfigService) {
+    let diags = config.diagnostics();
+    for d in &diags {
+        let sev = match d.severity {
+            config::Severity::Error => "ERROR",
+            config::Severity::Warning => "WARN",
+        };
+        let key = d.key.as_deref().map(|k| format!(" [{k}]")).unwrap_or_default();
+        let line = format!("[CONFIG {sev}]{key} {}", d.message);
+        eprintln!("{line}");
+        #[cfg(windows)]
+        output_debug_string(&line);
+    }
+}
+
+/// Emit one line to the Windows debugger output stream (`OutputDebugStringW`).
+#[cfg(windows)]
+fn output_debug_string(s: &str) {
+    use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
+    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: valid NUL-terminated wide string for the duration of the call.
+    unsafe { OutputDebugStringW(windows::core::PCWSTR(wide.as_ptr())) };
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -362,9 +450,26 @@ impl D3DState {
 
             if let Some(session) = &session {
                 // ── M1 path: vt snapshot → CellRenderer text pipeline ──
-                if self.cell_renderer.is_none() {
-                    match CellRenderer::new(&self.device, Some("Consolas"), FONT_PX) {
-                        Ok(r) => self.cell_renderer = Some(r),
+                // PHASE3-INTEGRATION: (re)create the renderer with the config's
+                // effective font. FONT_DIRTY is set on startup-apply and on any
+                // hot-reload that changes font-family/font-size, so a font change
+                // recreates the renderer (new metrics → the resize path below
+                // re-derives cols/rows from the new cell size).
+                if self.cell_renderer.is_none() || FONT_DIRTY.swap(false, Ordering::SeqCst) {
+                    let (family, px) = effective_font();
+                    match CellRenderer::new(&self.device, Some(&family), px) {
+                        Ok(r) => {
+                            // New metrics imply a geometry change: request a
+                            // resize through the pipeline so the vt + ConPTY
+                            // match the new cell size (font metrics changed).
+                            let m = r.metrics();
+                            let cols = (self.width / m.cell_w_u().max(1)).max(1) as i16;
+                            let rows = (self.height / m.cell_h_u().max(1)).max(1) as i16;
+                            session.resize_to(cols, rows);
+                            self.cell_renderer = Some(r);
+                            self.just_resized = true;
+                            probe("HOST", &format!("CellRenderer (re)created: {family} {px}px"));
+                        }
                         Err(e) => probe("HOST", &format!("CellRenderer init FAILED: {e}")),
                     }
                 }
@@ -586,17 +691,25 @@ fn selection_metrics() -> Option<term_render::CellMetrics> {
 }
 
 /// One live end-to-end session on the committed M1 stack:
-/// keystroke → encoder → ConPTY(pwsh) → vt feed → snapshot → CellRenderer → present.
+/// keystroke → encoder → ConPTY(profile) → vt feed → snapshot → CellRenderer → present.
+///
+/// PHASE3-INTEGRATION: the session is now driven by a [`layout::Session`] built
+/// from [`ConfigService`] + [`ProfileSet`], replacing the hardcoded
+/// `Shell::Pwsh` wiring. The config service also feeds clipboard gates, font
+/// changes, and scrollback (new-session) from the resolved config, and surfaces
+/// diagnostics.
 struct TermSession {
-    /// Shared vt (Q2 variant A). The ConPTY reader thread feeds it; the render
-    /// thread snapshots it under the brief lock.
+    /// The layout session: owns the vt (SharedTerminal), ConPty, resize
+    /// pipeline, cwd tracking, and exit classification.
+    session: Session,
+    /// Clone of the session's shared vt, cached for the hot path (snapshot,
+    /// responses) so we don't re-borrow through the session each tick.
     term: SharedTerminal,
-    /// The pty. `Arc` so [`ResizePipeline`] can hold its own reference to the
-    /// same session and the render tick can write query responses back to it.
-    conpty: Arc<ConPty>,
-    /// The one correct resize-ordering path (ConPTY resize → vt resize). Kept so
-    /// the window resize handler can `request` against it.
-    resize: ResizePipeline,
+    /// The config hot-reload service. Polled each tick; a bumped generation
+    /// re-applies clipboard gates / font / diagnostics.
+    config: ConfigService,
+    /// Last config generation we applied, to detect hot reloads.
+    last_generation: u64,
     /// Encoded keyboard bytes from the probe / injector.
     input_rx: Receiver<InputMsg>,
     /// Reused snapshot buffer (allocated once, refilled per fed tick). Lives
@@ -611,34 +724,48 @@ struct TermSession {
     /// Echo self-test state.
     injected: bool,
     echo_seen_at: Option<Instant>,
-    exit_logged: bool,
+    /// Set once the child's exit has been surfaced into the pane (death screen).
+    death_surfaced: bool,
     started: Instant,
 }
 
 impl TermSession {
     fn spawn() -> std::io::Result<Self> {
-        // The vt behind the shared lock. The reader callback below feeds it
-        // directly (no intermediate channel) — SharedTerminal is Clone+Send+Sync.
-        let term = SharedTerminal::new(
-            Terminal::new(INIT_COLS, INIT_ROWS, VtOptions::default())
-                .map_err(|e| std::io::Error::other(format!("vt construct failed: {e}")))?,
-        );
+        // ── PHASE3-INTEGRATION startup (6-line shape) ──
+        let config = ConfigService::start(None)
+            .map_err(|e| std::io::Error::other(format!("config service: {e}")))?;
+        let cfg = config.current();
+        let profiles = ProfileSet::resolve_with_wsl(&cfg);
+        // The echo self-test is a deterministic headless gate: pin it to the
+        // built-in `pwsh` profile so the round-trip does not depend on this
+        // machine's default profile (which may be a WSL distro whose cold-start
+        // timing races the injection window). Interactive/self-test modes use
+        // the config default.
+        let profile = if mode() == Mode::EchoSelfTest {
+            profiles
+                .profiles()
+                .iter()
+                .find(|p| p.name == "pwsh")
+                .unwrap_or_else(|| profiles.default_profile())
+                .clone()
+        } else {
+            profiles.default_profile().clone()
+        };
+        // Publish the effective font before the first frame so the renderer is
+        // created with the config's font, not the fallback.
+        publish_font_config(&cfg.font_family, cfg.font_size);
+        let session = Session::open_with_options(
+            &profile,
+            INIT_COLS,
+            INIT_ROWS,
+            layout::SessionOptions { scrollback_limit: cfg.scrollback_limit },
+        )
+        .map_err(|report| std::io::Error::other(report.death_message()))?;
 
-        // Reader thread: feed the shared vt with each PTY chunk. Query responses
-        // captured during feed are drained on the render tick (see `tick`).
-        let feed_term = term.clone();
-        let conpty = ConPty::spawn(
-            Shell::Pwsh,
-            INIT_COLS as i16,
-            INIT_ROWS as i16,
-            move |chunk: &[u8]| {
-                feed_term.feed(chunk);
-            },
-        )?;
-        let conpty = Arc::new(conpty);
+        let term = session.terminal().clone();
 
-        // The single resize-ordering point for this session (SPEC §6.5).
-        let resize = ResizePipeline::new(Arc::clone(&conpty), term.clone());
+        // Apply the initial clipboard gates from config to the vt.
+        apply_clipboard_policy(&term, &cfg);
 
         let (input_tx, input_rx) = channel::<InputMsg>();
         // Single session per process: a second spawn would silently route
@@ -652,18 +779,23 @@ impl TermSession {
         let _ = WHEEL_TERM.set(term.clone());
         // Publish a vt handle for the selection hook (press/drag/copy).
         let _ = SELECTION_TERM.set(term.clone());
-        // PHASE3-INTEGRATION: ConfigService will feed clipboard_read /
-        // clipboard_write_max_bytes here; until then the vt keeps its
-        // config-matching defaults (Deny, 1 MB).
+
+        // Surface any startup diagnostics (malformed config, unknown keys).
+        surface_diagnostics(&config);
 
         probe(
             "PTY",
-            &format!("session spawned: pwsh {INIT_COLS}x{INIT_ROWS} (M1 SharedTerminal stack)"),
+            &format!(
+                "session spawned: profile='{}' {INIT_COLS}x{INIT_ROWS} (config gen {})",
+                session.profile_name(),
+                config.generation()
+            ),
         );
         Ok(Self {
+            session,
             term,
-            conpty,
-            resize,
+            config,
+            last_generation: 0,
             input_rx,
             snap: GridSnapshot::new(),
             pending_keys: VecDeque::new(),
@@ -671,9 +803,15 @@ impl TermSession {
             fed_this_tick: false,
             injected: false,
             echo_seen_at: None,
-            exit_logged: false,
+            death_surfaced: false,
             started: Instant::now(),
         })
+    }
+
+    /// Request a resize to an explicit `(cols, rows)` through the session's
+    /// resize pipeline. Used when a font change alters the cell metrics.
+    fn resize_to(&self, cols: i16, rows: i16) {
+        self.session.resize().request(cols, rows);
     }
 
     /// Pre-render tick: forward input to the PTY, drain vt query responses back
@@ -684,6 +822,9 @@ impl TermSession {
     /// responses the vt wants written back, and (c) snapshot under the brief lock.
     fn tick(&mut self) {
         self.fed_this_tick = false;
+
+        // ── PHASE3-INTEGRATION: apply a config hot reload if one landed. ──
+        self.apply_config_if_reloaded();
 
         // Echo self-test: inject once, through the real encoder path.
         if mode() == Mode::EchoSelfTest && !self.injected {
@@ -698,7 +839,7 @@ impl TermSession {
         // Keyboard → PTY (encoded bytes arrive stamped from the probe/injector).
         while let Ok((bytes, at)) = self.input_rx.try_recv() {
             self.pending_keys.push_back(at);
-            if let Err(e) = self.conpty.write(&bytes) {
+            if let Err(e) = self.session.conpty().write(&bytes) {
                 probe("PTY", &format!("write failed: {e}"));
             }
         }
@@ -721,12 +862,9 @@ impl TermSession {
             probe("OSC52", "clipboard read answered (policy=Allow)");
         }
 
-        // vt query responses (DSR/DA/OSC replies) → PTY writer (SPEC §6.1 shape).
-        // The reader thread captured these while feeding; drain and forward them
-        // so cursor-position / device-attribute answers flow back to pwsh.
-        for r in self.term.take_responses() {
-            let _ = self.conpty.write(&r);
-        }
+        // vt query responses (DSR/DA/OSC replies) → PTY writer + OSC 7 cwd
+        // tracking are owned by the layout Session's tick.
+        self.session.tick();
 
         // Snapshot under the brief lock. We reuse `self.snap` across frames and
         // only hold the lock for the `snapshot` call itself.
@@ -742,18 +880,66 @@ impl TermSession {
             self.scan_for_echo();
         }
 
-        if !self.exit_logged {
-            if let Some(exit) = self.conpty.try_exit() {
-                self.exit_logged = true;
-                probe(
-                    "PTY",
-                    &format!(
-                        "child exited: code={} detect_latency={:?}",
-                        exit.code, exit.detect_latency
-                    ),
-                );
+        // ── PHASE3-INTEGRATION: session death → death screen in-pane. ──
+        if !self.death_surfaced {
+            if let Some(report) = self.session.try_exit_report() {
+                self.death_surfaced = true;
+                self.surface_death(&report);
             }
         }
+    }
+
+    /// Poll the config service; on a bumped generation, re-apply the parts that
+    /// can change live (clipboard gates, font) and surface diagnostics.
+    /// Scrollback-limit is construction-time (vt budget) and applies to NEW
+    /// sessions only — documented here and in docs/config-reference.md.
+    fn apply_config_if_reloaded(&mut self) {
+        let gen = self.config.generation();
+        if gen == self.last_generation {
+            return;
+        }
+        self.last_generation = gen;
+        let cfg = self.config.current();
+
+        // Clipboard gates → vt.
+        apply_clipboard_policy(&self.term, &cfg);
+        // Font family/size → renderer (FONT_DIRTY makes the render tick recreate
+        // the CellRenderer; the resize path re-derives cols/rows).
+        publish_font_config(&cfg.font_family, cfg.font_size);
+        // Diagnostics (warnings/errors from this reload).
+        surface_diagnostics(&self.config);
+
+        probe(
+            "CONFIG",
+            &format!(
+                "hot reload applied (gen {gen}): font={} {}px clipboard_read={:?} \
+                 scrollback_limit={} (scrollback applies to new sessions only)",
+                cfg.font_family, cfg.font_size, cfg.clipboard_read, cfg.scrollback_limit
+            ),
+        );
+    }
+
+    /// Feed a synthetic styled death message into the vt so it renders in-pane
+    /// through the existing text path (least-churn visible mechanism). Shows
+    /// the ExitReport cause + code + duration + restart hint, distinguishing
+    /// E1 (spawn failure), E2 (WSL down), and normal/E4 exits.
+    fn surface_death(&self, report: &ExitReport) {
+        let kind = match &report.cause {
+            ExitCause::SpawnFailed(_) => "spawn failure",
+            ExitCause::WslDown(_) => "WSL unavailable",
+            ExitCause::Exited | ExitCause::Killed => "session ended",
+        };
+        probe(
+            "PTY",
+            &format!("death: {kind} — {}", report.death_message()),
+        );
+        // SGR 1;31 (bold red) banner, then reset. `\r\n` so it starts on a fresh
+        // line below the shell's last output.
+        let msg = format!(
+            "\r\n\x1b[1;31m[banshee] {}\x1b[0m\r\n",
+            report.death_message()
+        );
+        self.term.feed(msg.as_bytes());
     }
 
     /// Compute cols/rows for the current client size and request a resize through
@@ -766,7 +952,7 @@ impl TermSession {
         // ResizePipeline is the ONLY correct path: it orders ResizePseudoConsole
         // before the vt resize. Never call ConPty::resize / SharedTerminal::resize
         // directly for a window resize.
-        self.resize.request(cols, rows);
+        self.session.resize().request(cols, rows);
     }
 
     /// Post-present hook: attribute pending keypresses to the first present that

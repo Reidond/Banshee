@@ -137,6 +137,25 @@ pub struct LaunchSpec {
     pub env: Vec<(String, String)>,
 }
 
+/// Adapter from a resolved [`LaunchSpec`] to `term-pty`'s spawn parameter
+/// struct. The `SpawnSpec` type lives in `term-pty` (the dependency edge runs
+/// `layout -> term-pty`, so the spawn contract cannot live in `layout`); this
+/// `From` bridges the two without either crate depending on the other's
+/// internals. Note the `env` here is the profile's **overlay** — the sanitized
+/// base env + identity vars are applied by `term_pty::env::build_child_env`
+/// before the final `SpawnSpec` reaches `ConPty::spawn_spec` (see
+/// `layout::Session::open`).
+impl From<&LaunchSpec> for term_pty::SpawnSpec {
+    fn from(ls: &LaunchSpec) -> Self {
+        term_pty::SpawnSpec {
+            command: ls.command.clone(),
+            args: ls.args.clone(),
+            cwd: ls.cwd.clone(),
+            env: ls.env.iter().cloned().collect(),
+        }
+    }
+}
+
 /// The resolved, ordered set of profiles Banshee can launch: built-ins,
 /// auto-discovered sources, and user config, merged per the module-level
 /// docs.

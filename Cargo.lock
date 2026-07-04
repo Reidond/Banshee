@@ -14,6 +14,8 @@ version = "0.1.0"
 name = "app-shell"
 version = "0.1.0"
 dependencies = [
+ "config",
+ "layout",
  "term-core",
  "term-input",
  "term-pty",
@@ -172,7 +174,9 @@ name = "layout"
 version = "0.1.0"
 dependencies = [
  "config",
+ "term-core",
  "term-pty",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

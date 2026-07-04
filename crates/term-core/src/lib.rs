@@ -20,12 +20,14 @@
 //! via a channel — not shared references. See the `unsafe impl Send` note below.
 
 mod osc52;
+mod osc7;
 mod render_state;
 mod scrollback;
 mod selection;
 mod snapshot;
 
 pub use osc52::{base64_decode, base64_encode, ClipboardReadPolicy, Osc52Request};
+pub use osc7::parse_osc7_uri;
 pub use render_state::{
     CellRef, Cells, Colors, CursorInfo, CursorVisualStyle, Dirty, Frame, RenderState, RowIter,
     RowRef, RowSelection,
@@ -514,6 +516,49 @@ impl Terminal {
         (rc == sys::GhosttyResult::GHOSTTY_SUCCESS).then_some(v)
     }
 
+    /// The terminal's current working directory as last reported by the shell
+    /// via OSC 7 / OSC 9 / OSC 1337 (UC-01 step 5). Returns the **raw** string
+    /// the shell emitted — for OSC 7 that is a `file://` URI; decode it with
+    /// [`crate::parse_osc7_uri`] if you need the filesystem path. `None` when
+    /// no working directory has been reported (empty string) or the query
+    /// fails.
+    ///
+    /// Mechanism: a native `GHOSTTY_TERMINAL_DATA_PWD` data query — the vt
+    /// tracks the pwd itself, so no feed-tap interception is needed (unlike
+    /// OSC 52). See [`crate::osc7`] for why the data-query path is used.
+    #[must_use]
+    pub fn current_pwd(&self) -> Option<String> {
+        self.get_string(sys::GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_PWD)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Read a `GhosttyString`-typed data query into an owned `String`. The vt
+    /// returns a **borrowed** pointer valid only until the next mutating vt
+    /// call (`vt_write`/`reset`); we copy the bytes out immediately, honoring
+    /// that lifetime. Invalid UTF-8 is decoded lossily.
+    fn get_string(&self, data: sys::GhosttyTerminalData) -> Option<String> {
+        let mut s = sys::GhosttyString {
+            ptr: ptr::null(),
+            len: 0,
+        };
+        // SAFETY: `inner` live; these data kinds document a `GhosttyString *`
+        // output. The returned pointer is borrowed from the vt and valid until
+        // the next mutating call — we copy before returning, so no dangling.
+        let rc = unsafe {
+            sys::ghostty_terminal_get(self.inner, data, (&mut s as *mut sys::GhosttyString).cast::<c_void>())
+        };
+        if rc != sys::GhosttyResult::GHOSTTY_SUCCESS || s.ptr.is_null() {
+            return None;
+        }
+        if s.len == 0 {
+            return Some(String::new());
+        }
+        // SAFETY: `ptr`/`len` describe a valid borrowed byte run per the API
+        // contract; copied here, before any further vt call could invalidate it.
+        let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    }
+
     /// Escape hatch for tests / probing: the raw handle. Not part of the safe
     /// contract; used by the Gap Log probing tests to call capability APIs
     /// directly and record whether they are exposed.
@@ -647,6 +692,13 @@ impl SharedTerminal {
     /// [`Terminal::answer_clipboard_read`].
     pub fn answer_clipboard_read(&self, clipboard: &[u8]) {
         self.lock().answer_clipboard_read(clipboard);
+    }
+
+    /// The current working directory reported via OSC 7, under the lock. See
+    /// [`Terminal::current_pwd`].
+    #[must_use]
+    pub fn current_pwd(&self) -> Option<String> {
+        self.lock().current_pwd()
     }
 
     /// Escape hatch: run an arbitrary closure with the locked [`Terminal`].
