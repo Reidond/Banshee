@@ -300,6 +300,11 @@ struct D3DState {
     /// renderer reports the frame clean (the back buffers were reallocated, so the
     /// previous contents are gone and a skipped Present would show stale/garbage).
     just_resized: bool,
+    /// Whether the previous `render_frame` iteration called `Present`. Gates the
+    /// frame-latency-waitable wait: the waitable only re-signals after a
+    /// Present, so waiting after a damage-skipped frame stalls the UI thread
+    /// for the full timeout (the "1 fps when static" bug).
+    presented_last_frame: bool,
 }
 
 /// Create the flip-model composition swapchain in the exact UC-04 step-1 shape:
@@ -376,6 +381,9 @@ fn create_d3d(panel: &SwapChainPanelHandle, width: u32, height: u32) -> Result<D
         cell_renderer: None,
         spike_grid: None,
         just_resized: false,
+        // The waitable starts signaled at swapchain creation, so the first
+        // frame may legitimately wait.
+        presented_last_frame: true,
     })
 }
 
@@ -409,10 +417,15 @@ impl D3DState {
     /// Without one (`--self-test`): the legacy animated grid, so the hosting
     /// evidence stays reproducible unchanged.
     fn render_frame(&mut self, session: Option<&mut TermSession>) {
-        // Block on the waitable so we present at most one frame ahead. Timing out
-        // rather than waiting forever keeps a headless/occluded window from
-        // hanging the loop.
-        if !self.frame_latency_waitable.is_invalid() {
+        // Block on the waitable so we present at most one frame ahead — but ONLY
+        // when the previous iteration actually presented. The waitable is
+        // re-signaled by a completed Present; after a damage-skipped frame the
+        // signal is already consumed, and waiting again would stall the UI
+        // thread for the full timeout on every static frame (~1 fps app-wide
+        // lag — found during M1 T14 interactive testing). Timing out rather
+        // than waiting forever keeps a headless/occluded window from hanging
+        // the loop.
+        if !self.frame_latency_waitable.is_invalid() && self.presented_last_frame {
             unsafe {
                 let _ = windows::Win32::System::Threading::WaitForSingleObjectEx(
                     self.frame_latency_waitable,
@@ -608,6 +621,7 @@ impl D3DState {
                 self.just_resized = false;
                 self.stats.record_present();
             }
+            self.presented_last_frame = presented;
         }
 
         // Attribute pending keypresses to this present, and let the echo

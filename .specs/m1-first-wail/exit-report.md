@@ -33,6 +33,19 @@ framework-vs-terminal cost. Tracked as M1 defect **D-M1-1** (blocking-severity
 decision deferred to self-hosting; the SPEC target says "~80 MB", tilde
 acknowledged).
 
+## Interactive-lag defect (found by author, fixed 2026-07-04)
+**D-M1-fixed-2:** the frame-latency-waitable wait ran every frame, but the
+waitable only re-signals after a `Present` — so the first damage-skipped
+(clean) frame consumed the signal and every later frame stalled the UI thread
+for the full 1000 ms timeout: the whole app ran at ~1 fps whenever the screen
+was static. Fix: gate the wait on `presented_last_frame`. Evidence:
+inject→echo-visible went 1015 ms → **44 ms**; loop cadence restored.
+**Follow-up D-M1-2 (open):** after the fix, ~150 presents/s were observed
+against a mostly static prompt — damage-skip may be ineffective in the live
+loop (every tick's fresh snapshot may look dirty). Latency is unaffected;
+this is a power/perf-headroom question. Verify with a truly idle `-NoProfile`
+prompt and, if confirmed, tighten the renderer's damage comparison.
+
 ## Release-only defect found & fixed during the gate run
 `INPUT_TX.set()` lived inside a `debug_assert!` → release builds never installed
 the input channel (all typed input dead + selftest panic). Fixed; a sweep found
