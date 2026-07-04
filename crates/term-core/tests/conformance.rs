@@ -314,6 +314,9 @@ fn assert_golden(name: &str, actual: &str) {
             path.display()
         )
     });
+    // Tolerate CRLF from autocrlf checkouts (goldens are authored/compared as
+    // LF; .gitattributes pins eol=lf, this is the belt to that suspender).
+    let expected = expected.replace("\r\n", "\n");
 
     if expected != actual {
         let diff = unified_diff(&expected, actual, &path.display().to_string());
