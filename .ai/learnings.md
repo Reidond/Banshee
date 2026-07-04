@@ -39,6 +39,12 @@ to its home above and removed here.
 
 ## Common Pitfalls
 
+### [2026-07-04] WinUI 3 keyboard input lands on the InputSite child HWND — top-level subclass sees nothing
+- **Context**: First interactive run of the T7/T10 shell — typing produced zero WM_CHAR in the probe; headless self-tests could not catch it (no focus, and the E2E test injects downstream of WM_CHAR).
+- **Finding**: WinUI 3 routes keyboard/IME messages to its content-island child window (InputSite), so `SetWindowSubclass` on the top-level HWND never fires for keys. Thread-scoped hooks (`WH_GETMESSAGE` for posted keys/chars/IME + `WH_CALLWNDPROC` for sent focus messages, both with `GetCurrentThreadId`) observe input for every HWND on the UI thread and are the correct base for M1's input layer.
+- **Impact**: Never attach terminal input handling to the top-level window under Tier A; extend the hook pair in `app-shell/src/main.rs`. Any input feature must be verified with real foreground keystrokes (`WScript.Shell AppActivate + SendKeys` works from an agent shell), not just headless self-tests.
+- **Category**: pitfall
+
 ### [2026-07-04] ConPTY spawn: HPCON by value, and NULL std handles under redirected hosts
 - **Context**: T8 term-pty spike — child died 0xC0000142, then output leaked to the parent console under `cargo test`.
 - **Finding**: (1) `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` takes the HPCON **by value** in lpValue — passing `&hpcon` dangles. (2) When the host's stdio is redirected, the child inherits it and bypasses the PTY unless `STARTF_USESTDHANDLES` is set with all three handles NULL (microsoft/terminal#11276).

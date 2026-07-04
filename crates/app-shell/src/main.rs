@@ -23,7 +23,6 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -35,13 +34,12 @@ use term_input::{Encoder, Key, KeyEvent, Mode as EncMode, Modifiers};
 use term_pty::{ConPty, Shell};
 use term_render::GridRenderer;
 
-use windows::core::{w, Interface};
+use windows::core::Interface;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use windows_reactor::{
@@ -766,33 +764,27 @@ fn vk_to_key(vk: u32) -> Option<Key> {
     })
 }
 
-// ───────────────────────── Win32 HWND focus/IME/key probe ─────────────────────────
+// ──────────────────── Win32 thread-hook focus/IME/key probe ────────────────────
+//
+// WinUI 3 delivers keyboard/IME input to its content-island *child* HWND
+// (the InputSite window), not the top-level window — a top-level subclass
+// never sees WM_CHAR (found in the first interactive run; the headless
+// self-test cannot catch it because it never gains focus). The probe is
+// therefore thread-scoped hooks: WH_GETMESSAGE observes posted messages
+// (keys, chars, IME) and WH_CALLWNDPROC observes sent messages (focus) for
+// EVERY window on the UI thread, whichever child owns focus. This is also
+// the shape M1's real input layer builds on.
 
-/// Subclass id for our probe (arbitrary, unique within this window).
-const SUBCLASS_ID: usize = 0xBA_5E_11_EE;
-
-/// Whether we've already installed the subclass (install exactly once).
-static SUBCLASS_INSTALLED: OnceLock<()> = OnceLock::new();
+/// Whether we've already installed the hooks (install exactly once).
+static HOOKS_INSTALLED: OnceLock<()> = OnceLock::new();
 
 /// Track composition depth so we can flag the focus-loss-mid-composition case.
 static IME_COMPOSING: AtomicBool = AtomicBool::new(false);
 
-thread_local! {
-    /// Kept alive so the DefSubclassProc chain is valid for the window's life.
-    static SUBCLASS_KEEPALIVE: RefCell<Option<HWND>> = const { RefCell::new(None) };
-}
-
-/// The subclass window procedure: log the WM_* messages that carry the four
-/// Gherkin scenarios, then fall through to the default handler so WinUI/XAML
-/// keeps behaving normally.
-unsafe extern "system" fn probe_subclass_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _id: usize,
-    _ref: usize,
-) -> LRESULT {
+/// Log + forward one input-relevant WM_* message. Each message arrives via
+/// exactly one of the two hooks (posted xor sent), so there is no double
+/// handling.
+fn inspect_input_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
     match msg {
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let vk = wparam.0 as u32;
@@ -883,39 +875,59 @@ unsafe extern "system" fn probe_subclass_proc(
         }
         _ => {}
     }
-
-    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// Install the WM_* probe on the reactor host window's top-level HWND.
-///
-/// Reactor exposes no key/char/focus/IME callbacks, so we reach the HWND
-/// out-of-band: locate our own top-level window by its unique title
-/// ("Banshee M0 spike") with `FindWindowW`, then subclass it to observe the
-/// Win32 input messages a real terminal must consume anyway. Retries each frame
-/// until the window exists.
+/// WH_GETMESSAGE hook: posted messages (keys, chars, IME) on the UI thread.
+/// Only PM_REMOVE retrievals are inspected so peeked messages don't log twice.
+unsafe extern "system" fn getmessage_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 && wparam.0 as u32 == PM_REMOVE.0 {
+        // SAFETY: for WH_GETMESSAGE with code >= 0, lparam points to a MSG.
+        let msg = unsafe { &*(lparam.0 as *const MSG) };
+        inspect_input_message(msg.message, msg.wParam, msg.lParam);
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// WH_CALLWNDPROC hook: sent messages (WM_SETFOCUS / WM_KILLFOCUS) on the thread.
+unsafe extern "system" fn callwndproc_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+        // SAFETY: for WH_CALLWNDPROC with code >= 0, lparam points to a CWPSTRUCT.
+        let cwp = unsafe { &*(lparam.0 as *const CWPSTRUCT) };
+        inspect_input_message(cwp.message, cwp.wParam, cwp.lParam);
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// Install the input probe as thread-scoped hooks on the UI thread. Called
+/// from the render tick (which runs on that thread); installs exactly once.
 fn install_input_probe() {
-    if SUBCLASS_INSTALLED.get().is_some() {
+    if HOOKS_INSTALLED.get().is_some() {
         return;
     }
     unsafe {
-        let hwnd = match FindWindowW(None, w!("Banshee M0 spike")) {
-            Ok(h) if !h.is_invalid() => h,
-            _ => return, // window not up yet; retry next frame.
-        };
-        let ok = SetWindowSubclass(hwnd, Some(probe_subclass_proc), SUBCLASS_ID, 0).as_bool();
-        if ok {
-            SUBCLASS_KEEPALIVE.with(|c| *c.borrow_mut() = Some(hwnd));
-            probe(
-                "HOST",
-                &format!(
-                    "input probe subclass installed on hwnd=0x{:X} (via FindWindowW by title)",
-                    hwnd.0 as usize
-                ),
-            );
-            let _ = SUBCLASS_INSTALLED.set(());
-        } else {
-            probe("HOST", "SetWindowSubclass failed — will retry next frame");
+        let tid = windows::Win32::System::Threading::GetCurrentThreadId();
+        let get_hook = SetWindowsHookExW(WH_GETMESSAGE, Some(getmessage_hook), None, tid);
+        let call_hook = SetWindowsHookExW(WH_CALLWNDPROC, Some(callwndproc_hook), None, tid);
+        match (get_hook, call_hook) {
+            (Ok(_), Ok(_)) => {
+                probe(
+                    "HOST",
+                    &format!(
+                        "input probe installed: WH_GETMESSAGE + WH_CALLWNDPROC thread hooks (tid={tid})"
+                    ),
+                );
+                let _ = HOOKS_INSTALLED.set(());
+            }
+            (get_hook, call_hook) => {
+                // Partial success would double-install on retry — unhook first.
+                if let Ok(h) = get_hook {
+                    let _ = UnhookWindowsHookEx(h);
+                }
+                if let Ok(h) = call_hook {
+                    let _ = UnhookWindowsHookEx(h);
+                }
+                probe("HOST", "hook install failed — will retry next frame");
+            }
         }
     }
 }
