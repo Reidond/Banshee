@@ -1,6 +1,8 @@
 # CLAUDE.md
 @AGENTS.md
 
+> Bootstrapped by [lemmi-ai-kit](https://github.com/lemmi-ukraine/lemmi-ai-kit)
+
 ## Skills
 
 ### User-Invocable (use with `/skill-name`)
