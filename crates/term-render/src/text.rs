@@ -669,11 +669,8 @@ impl TextEngine {
         let loaded = self.stack.loaded(face)?;
         if let Some(rb) = loaded.rb_face() {
             let mut buffer = rustybuzz::UnicodeBuffer::new();
-            if let Some(ch) = char::from_u32(codepoint) {
-                buffer.push_str(ch.encode_utf8(&mut [0u8; 4]));
-            } else {
-                return None;
-            }
+            let ch = char::from_u32(codepoint)?;
+            buffer.push_str(ch.encode_utf8(&mut [0u8; 4]));
             buffer.guess_segment_properties();
             let glyphs = rustybuzz::shape(&rb, &[], buffer);
             let infos = glyphs.glyph_infos();

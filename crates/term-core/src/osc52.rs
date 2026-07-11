@@ -91,13 +91,11 @@ pub fn parse_osc52(bytes: &[u8], write_max_bytes: usize) -> Option<Osc52Request>
     let body = &rest[..term_rel]; // "<targets>;<payload>"
 
     // Split off the targets field (up to the first ';'); the remainder is the
-    // payload (which may itself contain no further ';').
-    let payload = match body.iter().position(|&b| b == b';') {
-        Some(semi) => &body[semi + 1..],
-        // No ';' → malformed for our purposes (targets with no payload). xterm
-        // treats a lone field as targets; there's nothing to set/read.
-        None => return None,
-    };
+    // payload (which may itself contain no further ';'). No ';' → malformed
+    // for our purposes (targets with no payload): xterm treats a lone field
+    // as targets; there's nothing to set/read.
+    let semi = body.iter().position(|&b| b == b';')?;
+    let payload = &body[semi + 1..];
 
     if payload == b"?" {
         return Some(Osc52Request::Read);
