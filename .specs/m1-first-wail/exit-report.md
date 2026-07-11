@@ -56,6 +56,19 @@ Re-scope the NFR (for example, budget terminal incremental memory separately)
 or revisit the hosting framework in a later architecture milestone; do not
 represent terminal-cache eviction as a fix for a framework-baseline overage.
 
+## Agent-driven visual verification (added 2026-07-11)
+`scripts/visual-smoke.ps1` (+ `capture-window.ps1`): launches the real window,
+drives it with posted messages, and captures per-scene PNGs via
+`PrintWindow(PW_RENDERFULLCONTENT)` — composed WinUI3 content captures
+correctly. Gallery → `soak-results/visual/<timestamp>/` (gitignored). This is
+the "computer use" loop for UI verification: agents can operate the app AND
+see the pixels. First gallery (orchestrator-reviewed): SGR styles incl.
+truecolor/underline/strike/inverse ✅, Cyrillic/CJK ✅, scrollback view with
+hidden cursor ✅, starship prompt ✅. **New findings for M2 backlog:** color
+emoji renders monochrome (known R8-atlas boundary, now visually confirmed);
+**Nerd Font / PUA icons render as blank gaps** (fallback chain doesn't resolve
+private-use-area codepoints — M2 "fonts complete" line item, screenshot-backed).
+
 ## Automated live-input matrix (added 2026-07-04, post-code-complete)
 `crates/app-shell/tests/live_input_matrix.rs` (runner: `scripts/live-matrix.ps1`)
 automates the Banshee-side delivery contract of the manual input scenarios —
