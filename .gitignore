@@ -4,6 +4,11 @@
 *.rs.bk
 *.pdb
 
+# Python test/runtime caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Windows
 Thumbs.db
 Desktop.ini

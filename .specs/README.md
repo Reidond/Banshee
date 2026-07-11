@@ -9,8 +9,8 @@
 | Stage | Codename | ~Dur | Depth | State | Directory |
 |---|---|---|---|---|---|
 | M0 | Séance | 3 wk | **Full** (requirements + design + tasks) | draft | [m0-seance/](m0-seance/) |
-| M1 | First Wail | 6 wk | **Full** (requirements + design + tasks) | draft | [m1-first-wail/](m1-first-wail/) |
-| M2 | Chorus | 6 wk | Light (spec + task outline) — re-baseline at M1 exit | draft | [m2-chorus/](m2-chorus/) |
+| M1 | First Wail | 6 wk | **Full** (requirements + design + tasks) | completed (early-alpha exit; deviations logged) | [m1-first-wail/](m1-first-wail/) |
+| M2 | Chorus | 6 wk | Light (spec + task outline) — re-baseline at M1 exit | approved (light; full re-baseline ready) | [m2-chorus/](m2-chorus/) |
 | M3 | Familiar | 5 wk | Light (spec + task outline) — re-baseline at M2 exit | draft | [m3-familiar/](m3-familiar/) |
 | M4 | Manifest | 4 wk | Light (spec + task outline) — re-baseline at M3 exit | draft | [m4-manifest/](m4-manifest/) |
 

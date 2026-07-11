@@ -191,9 +191,9 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Files to modify**: `tests/e2e/smoke.rs`, soak script
 - **Acceptance criteria**:
   - [x] Smoke green on every PR (Mode 1: real binary via CARGO_BIN_EXE + --echo-selftest, wired into ci.yml); Mode 2 real-window drive (Win32 PostMessage + `BANSHEE_DEBUG_DUMP_GRID` read API) passed 2/2 locally, kept `#[ignore]` for desktop runs
-  - [~] Soak harness built + validated (scripts/soak.ps1, WSL `top -b` busy pane, OLS slope verdict; 2-min validation run dominated by warmup as expected) — **the 24 h run is an OPERATOR item**
+  - [x] Soak harness built + validated (scripts/soak.ps1, WSL `top -b` busy pane, OLS slope verdict; 2-min validation run dominated by warmup as expected); the 24 h run is explicitly deferred to the M2/pre-beta reliability gate
 - **Test requirements**: smoke in PR CI; soak nightly/manual with recorded report
-- **Status**: [x] Harness done (2026-07-04); 24 h soak pending operator
+- **Status**: [x] Harness done (2026-07-04); long-run evidence deferred at the accepted early-alpha exit
 
 ### Task 14: Perf gate + self-host exit
 
@@ -201,11 +201,11 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Tasks 12, 13
 - **Files to modify**: exit report in `.specs/m1-first-wail/`; defect fixes as triaged; Deviations Log
 - **Acceptance criteria**:
-  - [~] SPEC §10 table run (release, methodology in [exit-report.md](exit-report.md)): stall PASS (0.122 ms p99), latency PASS app-side (0.52 ms loop + sub-ms PresentMon pipeline; Composed:Flip caps photon attribution), **cold start FAIL (748 ms median first-content-present vs 500 ms — now properly instrumented)**, **memory FAIL → SPEC-LEVEL FINDING (WinUI3 session-free baseline alone is 119 MB vs the whole ~80 MB budget; terminal increments are modest: +8.4 MB session, +10.7 MB filled scrollback)**, vtebench Banshee baseline recorded (harness + numbers in perf/), winghostty ratio = operator
-  - [ ] Author self-hosts full workdays — OPERATOR (the real exit criterion)
-  - [ ] M2 spec re-baseline — deliberately deferred until after self-hosting (see exit report §checklist item 8)
+  - [x] SPEC §10 table measured and dispositioned for early alpha (release, methodology in [exit-report.md](exit-report.md)): stall PASS (0.122 ms p99), latency PASS app-side (0.52 ms loop + sub-ms PresentMon pipeline), **cold start 748 ms median accepted as an alpha deviation while the ≤500 ms target remains**, and **memory 138.44 MB filled-session accepted with the ~80 MB target superseded pending a numeric framework-aware M2 replacement**. Banshee vtebench baselines are recorded; winghostty comparison is deferred to the M2 perf gate.
+  - [x] Author self-hosting verdict — accepted 2026-07-11 as good enough for early alpha
+  - [x] M2 full re-baseline unblocked; approved light spec contains the self-hosting findings and is ready for promotion
 - **Test requirements**: perf runs archived; exit review = Full quality gate
-- **Status**: [~] Code-complete 2026-07-04; exit report written; operator checklist items 1–8 pending. **Release-only defect found+fixed at the gate: INPUT_TX.set inside debug_assert! (input dead in release); WSL distro-default no longer elects app default profile.**
+- **Status**: [x] **M1 EXIT ACCEPTED FOR EARLY ALPHA (2026-07-11).** Residual IME checks, winghostty comparison, 24 h soak, cold-start optimization, and the replacement memory NFR remain explicit M2/pre-beta work.
 
 ## Deviations Log
 
@@ -220,3 +220,4 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 | T3 | Scrollback read mechanism reconciled: no `ghostty_scrollback_*` symbols — the exposed mechanism is the first-class viewport API (`ghostty_terminal_scroll_viewport` + `VIEWPORT_ACTIVE`/`SCROLLBACK_ROWS` data queries); the vt owns pin-while-scrolled natively; render-state follows the scrolled viewport for free. | gap_probes.rs was the source of truth; Gap Log wording was imprecise, now pinned here. |
 | T2 | Glyph rasterization needs `IDWriteFactory2` grayscale analysis (base-factory ClearType analysis returns empty R8 bounds); base `ALIASED` kept as fallback. | Found empirically — first test run failed on the base overload. |
 | T2 | Curly/Dotted/Dashed underlines are segmented-rect approximations (no undercurl shader); renderer consumes `GridSnapshot`, not the T1 `RenderState` iterator — conversion isolated in one module for the swap at integration. `grid_spike.rs` kept for app-shell `--self-test`. | v1 scope; parallel-writer partitioning. Iterator migration is a Phase 1 exit integration item. |
+| T14 | Early-alpha milestone exit accepted with measured deviations: cold start remains above the retained ≤500 ms target; current memory is accepted and the ~80 MB target is superseded pending a numeric M2 replacement; residual IME, winghostty, and 24 h soak evidence is deferred. | The author's self-hosting verdict is the M1 product gate. Deferred evidence and failed targets remain visible rather than being relabeled as passes. |

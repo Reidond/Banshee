@@ -39,6 +39,12 @@ to its home above and removed here.
 
 ## Common Pitfalls
 
+### [2026-07-11] Confirm emitted codepoints before diagnosing a missing-glyph render bug
+- **Context**: M2 font/config re-baseline — blank positions in a Starship screenshot were initially classified as failed Nerd-Font/PUA fallback.
+- **Finding**: The inspected prompt configuration contained literal spaces at those positions, so the shell emitted no PUA codepoints; a screenshot alone could not distinguish missing ink from missing source characters.
+- **Impact**: Before changing the renderer or fallback chain, inspect the source configuration/output and record the actual codepoints. Require a synthetic codepoint fixture or verified prompt emission for visual font regressions.
+- **Category**: pitfall
+
 ### [2026-07-04] WinUI 3 keyboard input lands on the InputSite child HWND — top-level subclass sees nothing
 - **Context**: First interactive run of the T7/T10 shell — typing produced zero WM_CHAR in the probe; headless self-tests could not catch it (no focus, and the E2E test injects downstream of WM_CHAR).
 - **Finding**: WinUI 3 routes keyboard/IME messages to its content-island child window (InputSite), so `SetWindowSubclass` on the top-level HWND never fires for keys. Thread-scoped hooks (`WH_GETMESSAGE` for posted keys/chars/IME + `WH_CALLWNDPROC` for sent focus messages, both with `GetCurrentThreadId`) observe input for every HWND on the UI thread and are the correct base for M1's input layer.
@@ -64,6 +70,18 @@ to its home above and removed here.
 - **Category**: pitfall
 
 ## Architecture Decisions
+
+### [2026-07-11] Proprietary reference fonts are explicit local configuration, not product defaults
+- **Context**: The reference Windows environment has distinct DirectWrite families `PragmataPro Mono` and `PragmataPro Mono Liga`, while Windows Terminal and Banshee used different configured/default families.
+- **Finding**: Font file presence and another terminal's settings do not establish Banshee's active family. Exact DirectWrite family names are the contract; the portable product default remains `Cascadia Mono` and proprietary files are never bundled.
+- **Impact**: Keep reference-machine font choices in Banshee configuration, test missing-family and ordered-fallback behavior independently with non-proprietary fixtures/mocks, and do not inherit Windows Terminal profile settings implicitly.
+- **Category**: architecture
+
+### [2026-07-11] Early-alpha acceptance records deviations without turning them into passes
+- **Context**: M1 exit — the author accepted the self-hosted build with a 748 ms cold start and current WinUI3 memory use.
+- **Finding**: The ≤500 ms cold-start target remains active while the measured result is an explicit alpha deviation. The ~80 MB memory target is different: it is superseded because the framework baseline alone exceeds it, and requires a new numeric framework-aware target during M2 re-baselining.
+- **Impact**: Milestone status, measured verdict, and target lifecycle must be recorded separately. Deferred soak/comparison/manual evidence remains visible and moves to a named later gate instead of being silently marked passed.
+- **Category**: architecture
 
 ### [2026-07-04] Vendored-artifact idempotence = verify-not-rebuild, not byte-reproducibility
 - **Context**: T2 — three consecutive Zig/MSVC builds of the same pinned source produced three different `.lib` hashes (embedded timestamps/paths).

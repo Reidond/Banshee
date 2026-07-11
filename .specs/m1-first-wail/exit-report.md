@@ -1,10 +1,12 @@
 # M1 Exit Report — m1-first-wail (code-complete checkpoint, 2026-07-04)
 
-> Status: **CODE-COMPLETE, milestone exit PENDING OPERATOR ITEMS.**
-> All 14 tasks implemented and verified on branch `m1-first-wail` (T1–T13 fully;
-> T14's measurable gates run below). Implemented via orchestrated agents; every
-> task's definition of done was independently re-verified by the orchestrator
-> before merge (tests re-run, diffs read, claims checked).
+> Status: **M1 EXIT ACCEPTED FOR EARLY ALPHA (2026-07-11).**
+> All 14 tasks are implemented and verified. The author accepted the self-hosting
+> build for early-alpha use. The 500 ms cold-start target remains in force, with
+> the measured 748 ms median recorded as an accepted alpha deviation. Current
+> memory usage is accepted; the obsolete ~80 MB target will be replaced with a
+> measured framework-aware numeric NFR during the full M2 re-baseline. Deferred
+> operator evidence is listed below and is not represented as passed.
 
 ## SPEC §10 perf table — measured through 2026-07-11 (release builds, dev machine ≈ reference machine, ~160 Hz display)
 
@@ -13,8 +15,8 @@
 | Keypress → present | ≤ 15 ms p99 @ 120 Hz | loop-side avg 0.52 ms / p95 0.52 ms (echo-selftest, release). PresentMon (elevated, real typing, 26 presents): MsInPresentAPI p99 0.39 ms, render→present-latency p99 0.45 ms, GPU 0.27 ms — app-side pipeline is sub-ms end to end. **Photon attribution NA: `PresentMode = Composed: Flip`** (XAML/SwapChainPanel composition) — DWM owns the final flip, PresentMon can't attribute screen time to our swapchain. Compositor adds ~1–2 vsyncs inherently (6.3–12.6 ms @ 160 Hz; 8.3–16.7 ms @ the SPEC's 120 Hz). | App-side PASS with huge margin; **end-to-end estimate ≈ 7–13 ms @ 160 Hz (within gate), marginal at 120 Hz worst-case** — the compositor hop, not our code, is the budget item. See open question below. |
 | UI-thread stall under flood | < 8 ms | consumer lock+update p99 **0.122 ms**, max 3.42 ms (release `flood_sync`, saturating 10 s flood) | **PASS** (65× headroom) |
 | vtebench vs winghostty | ≤ 1.5× wall-time | Harness ready; Banshee release medians recorded (3 warm runs): scrolling **1,240.32 ms**, dense-cells **1,004.53 ms**, unicode **950.82 ms**. 9/9 runs completed with marker + rendered-death-banner proof. See `perf/vtebench-banshee-2026-07-05.md`. | **Banshee baseline DONE; winghostty comparison = OPERATOR** (not installed on this machine). |
-| Cold start → interactive prompt | ≤ 500 ms | First successful dirty `Present` carrying non-empty bare-pwsh content, 5 release runs: **704 ms min / 748 ms median** (runs: 895, 757, 744, 704, 748 ms). Prompt-bearing grid externally observed at 1.462 s min / 1.495 s median; that secondary hook is conservative because dumps are throttled to ~1/s. | **FAIL** — even first content present is 204 ms over the gate at best. |
-| Idle session memory @ 10k scrollback | ≤ ~80 MB | 3-run release medians after 10 s idle: session-free WinUI3+D3D **119.30 MB private / 119.52 MB WS**; bare pwsh **127.72 / 125.92 MB**; after 15k lines (default scrollback capped at ≈10.9k lines) **138.44 / 136.58 MB**. | **FAIL / SPEC-LEVEL FINDING** — framework baseline alone exceeds the whole budget by 39.30 MB. |
+| Cold start → interactive prompt | ≤ 500 ms | First successful dirty `Present` carrying non-empty bare-pwsh content, 5 release runs: **704 ms min / 748 ms median** (runs: 895, 757, 744, 704, 748 ms). Prompt-bearing grid externally observed at 1.462 s min / 1.495 s median; that secondary hook is conservative because dumps are throttled to ~1/s. | **EARLY-ALPHA DEVIATION ACCEPTED** — target remains ≤500 ms; 748 ms is not a pass and remains optimization work. |
+| Idle session memory @ 10k scrollback | ≤ ~80 MB (superseded) | 3-run release medians after 10 s idle: session-free WinUI3+D3D **119.30 MB private / 119.52 MB WS**; bare pwsh **127.72 / 125.92 MB**; after 15k lines (default scrollback capped at ≈10.9k lines) **138.44 / 136.58 MB**. | **ACCEPTED FOR EARLY ALPHA** — current usage is acceptable; define a framework-aware numeric replacement NFR during the full M2 re-baseline. |
 | New-tab p99 | (M2 gate) | N/A — no tabs in M1 | N/A |
 
 **Methodology:** all release builds; `--echo-selftest` for loop-side latency
@@ -50,11 +52,13 @@ small initial atlas cannot close a 58.44 MB total gap, while reducing scrollback
 would trade away the specified retention and changing the WinUI3 host is not a
 trivially safe M1 hardening edit.
 
-**Verdict/spec finding:** ~80 MB process-private is unattainable with the
+**Verdict/spec decision:** ~80 MB process-private is unattainable with the
 current framework because the session-free baseline is already 119.30 MB.
-Re-scope the NFR (for example, budget terminal incremental memory separately)
-or revisit the hosting framework in a later architecture milestone; do not
-represent terminal-cache eviction as a fix for a framework-baseline overage.
+The author accepts the measured 138.44 MB filled-session result for early alpha.
+The full M2 re-baseline must replace the superseded target with a measured,
+framework-aware numeric NFR (potentially separating host baseline and terminal
+incremental memory). Do not represent terminal-cache eviction as a fix for a
+framework-baseline overage.
 
 ## Agent-driven visual verification (added 2026-07-11)
 `scripts/visual-smoke.ps1` (+ `capture-window.ps1`): launches the real window,
@@ -66,8 +70,15 @@ see the pixels. First gallery (orchestrator-reviewed): SGR styles incl.
 truecolor/underline/strike/inverse ✅, Cyrillic/CJK ✅, scrollback view with
 hidden cursor ✅, starship prompt ✅. **New findings for M2 backlog:** color
 emoji renders monochrome (known R8-atlas boundary, now visually confirmed);
-**Nerd Font / PUA icons render as blank gaps** (fallback chain doesn't resolve
-private-use-area codepoints — M2 "fonts complete" line item, screenshot-backed).
+the initial **Nerd Font / PUA blank-gap** interpretation was re-verified on
+2026-07-11 and is **not a reproduced renderer defect**: the inspected Starship
+configuration contained literal spaces for its Git/language symbols, so those
+positions emitted no PUA codepoints. The reference environment instead has
+distinct `PragmataPro Mono` and `PragmataPro Mono Liga` DirectWrite families;
+Banshee had no user config and therefore used its `Cascadia Mono` product
+default. M2 now owns exact-family configuration, ordered fallback semantics,
+and missing-family diagnostics; `PragmataPro Mono Liga` is the intended
+reference-machine primary and must not be bundled.
 
 ## Automated live-input matrix (added 2026-07-04, post-code-complete)
 `crates/app-shell/tests/live_input_matrix.rs` (runner: `scripts/live-matrix.ps1`)
@@ -120,29 +131,30 @@ opts in) — found because the cold-start gate landed in a bash prompt.
   line/col; unknown keys warn and apply.
 - Zero network egress; no secrets in config.
 
-## Operator checklist for milestone exit (in order)
-1. **Manual IME matrix** — `crates/app-shell/MANUAL-MATRIX.md` §M1-IME-1..6
-   (JA/ZH commit-once, UA/RU mid-line switch, Win+. emoji, focus-loss cancel,
-   PSReadLine interaction). The author's UA layout is the acceptance environment.
-2. **PresentMon** end-to-end keypress→present capture (install PresentMon; run
-   against the release build; correlate with the loop-side 0.52 ms number).
-3. **DONE 2026-07-11 — Cold-start instrumentation + rerun:** 704 ms min /
-   748 ms median first-content present; **FAIL** vs 500 ms.
-4. **PARTIAL 2026-07-11 — vtebench vs winghostty:** focus-free harness and
-   Banshee three-scenario medians recorded; winghostty ratio remains operator
-   work because winghostty is not installed. See `docs/vtebench.md`.
-5. **24 h soak** — `scripts/soak.ps1` (validated harness; WSL `top -b` busy pane;
-   OLS slope verdict, threshold 500 KB/h).
-6. **DONE 2026-07-11 — D-M1-1 memory triage:** framework baseline 119.30 MB
-   private; filled terminal 138.44 MB; **FAIL/spec-level NFR re-scope needed**.
-7. **Author self-hosts full workdays** — the real exit criterion. Defects triaged
-   against the P0 table; non-blockers → M2 backlog.
-8. After 1–7: **re-baseline the M2 spec** (`.specs/m2-chorus`, promote to full
-   depth per `.specs/README.md`) with self-hosting findings folded in. Deferred
-   deliberately: re-baselining before self-hosting feedback would bake in
-   untested assumptions.
+## Operator checklist disposition at early-alpha exit
+1. **Manual IME matrix:** automated coverage and the author's daily-use verdict
+   are accepted for alpha; residual JA/ZH conversion and focus-loss checks move
+   to M2 hardening and remain explicitly unverified.
+2. **DONE — PresentMon:** app-side typing/present evidence is recorded above.
+3. **DONE WITH ALPHA DEVIATION — cold start:** 704 ms min / 748 ms median;
+   the ≤500 ms target remains unchanged and open.
+4. **DEFERRED — vtebench vs winghostty:** Banshee baselines are recorded;
+   comparison moves to the M2 perf gate because winghostty is not installed.
+5. **DEFERRED — 24 h soak:** harness is validated; the long run moves to the
+   M2/pre-beta reliability gate.
+6. **DONE WITH NFR RE-BASELINE — memory:** current 138.44 MB filled-session
+   result is accepted; a replacement numeric target is required in the full M2 spec.
+7. **PASSED 2026-07-11 — author self-hosting verdict:** good enough for early alpha;
+   P0 defects are closed and remaining findings are tracked as M2/hardening work.
+8. **UNBLOCKED — M2 re-baseline:** the approved light spec may now be promoted to
+   full depth through the re-baseline protocol.
 
 ## Decisions recorded this milestone
+- **Early-alpha exit (2026-07-11):** author self-hosting accepted. Cold start is
+  an explicit deviation, not a pass; the ≤500 ms target remains unchanged.
+- **Memory gate:** measured usage is acceptable for alpha. The ~80 MB target is
+  superseded for the current host and must receive a numeric framework-aware
+  replacement during the full M2 re-baseline.
 - **Q2 (SPEC §15.2)**: brief read-lock (variant A). Flood p99 0.24–0.31 ms debug /
   0.122 ms release vs 8 ms budget. Variant B stays a drop-in behind
   `SharedTerminal::with_render_update`.
@@ -154,6 +166,11 @@ opts in) — found because the cold-start gate landed in a bash prompt.
   spec language corrected in tasks.md Deviations Log.
 
 ## Known M2-backlog seeds (non-blocking)
+- Font configuration completion: exact DirectWrite family names, ordered
+  user-configured fallbacks, and explicit missing-family diagnostics (never
+  silently substitute collection index zero). Reference-machine visual
+  acceptance uses installed `PragmataPro Mono Liga`; automated tests must not
+  depend on the proprietary font.
 - RenderState-iterator migration of the app-shell render path (currently
   snapshot-under-lock; TODO comment at the site; perf headroom is large).
 - OSC 52 cross-chunk reassembly (fails safe today).
