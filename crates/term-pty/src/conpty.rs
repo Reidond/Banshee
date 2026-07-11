@@ -29,6 +29,7 @@
 #![cfg(windows)]
 
 use std::io;
+use std::os::windows::ffi::OsStrExt;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -74,6 +75,90 @@ impl Shell {
             Shell::Cmd => "cmd.exe".to_string(),
         }
     }
+}
+
+/// A generalized spawn request (M1 Task 11): command + args + cwd + env,
+/// decoupled from the built-in [`Shell`] enum so `layout` can drive spawning
+/// from a resolved profile.
+///
+/// This type lives in `term-pty` (not `layout`) because the dependency edge
+/// runs `layout -> term-pty`; `layout::LaunchSpec` converts *into* this via a
+/// `From` adapter (see `layout::profile`). Kept deliberately minimal — the
+/// exact `CreateProcessW`-level assembly (command-line quoting, env block
+/// encoding, cwd application) is `term-pty`'s job.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpawnSpec {
+    /// The executable to launch (e.g. `wsl.exe`, `pwsh.exe`). Looked up on
+    /// `PATH` by `CreateProcessW` when not an absolute path.
+    pub command: String,
+    /// Arguments, each a separate element (quoting is applied per-arg here).
+    pub args: Vec<String>,
+    /// Working directory for the spawned process, or `None` to inherit
+    /// Banshee's. For WSL specs the cwd is expressed via `--cd` in `args`, not
+    /// here (see `layout::ResolvedProfile::launch_spec`).
+    pub cwd: Option<std::path::PathBuf>,
+    /// The **complete** child environment (already sanitized + overlaid by
+    /// [`crate::env::build_child_env`]). When empty, the child inherits
+    /// Banshee's environment.
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+impl SpawnSpec {
+    /// The display command line (command + args, space-joined with minimal
+    /// quoting) — used in E1 spawn-failure messages and diagnostics.
+    #[must_use]
+    pub fn command_line(&self) -> String {
+        let mut parts = Vec::with_capacity(1 + self.args.len());
+        parts.push(quote_arg(&self.command));
+        for a in &self.args {
+            parts.push(quote_arg(a));
+        }
+        parts.join(" ")
+    }
+}
+
+/// Quote a single command-line argument for `CreateProcessW` (and for display).
+///
+/// Applies the standard MSVCRT rule: wrap in double quotes when the arg is
+/// empty or contains whitespace/quotes, escaping embedded backslashes-before-a-
+/// quote and the quote itself. This is the same algorithm `std`'s
+/// `CommandExt` uses; we reimplement it because we assemble the raw command
+/// line ourselves (ConPTY needs a single `lpCommandLine`, not argv).
+fn quote_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.contains(['"', ' ', '\t']) {
+        return arg.to_string();
+    }
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => {
+                backslashes += 1;
+            }
+            '"' => {
+                // Escape all pending backslashes (they precede a quote) + the quote.
+                for _ in 0..=backslashes {
+                    out.push('\\');
+                }
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push(ch);
+            }
+        }
+    }
+    // Trailing backslashes precede the closing quote: double them.
+    for _ in 0..(backslashes * 2) {
+        out.push('\\');
+    }
+    out.push('"');
+    out
 }
 
 /// The result of a child exit, surfaced via the exit channel (UC-03 step 6).
@@ -136,6 +221,10 @@ pub struct ConPty {
     hpcon: HPCON,
     process: OwnedHandle,
     thread: OwnedHandle,
+    /// The child's process id (`PROCESS_INFORMATION::dwProcessId`). Stable for
+    /// the process's lifetime; used by the lifecycle reliability test to assert
+    /// the child is gone after close (via `OpenProcess`).
+    child_pid: u32,
     /// Our end of the input pipe: writing here sends bytes to the child stdin.
     write_handle: HANDLE,
     /// Reader thread draining the output pipe until EOF.
@@ -144,8 +233,10 @@ pub struct ConPty {
     wait_handle: HANDLE,
     /// Leaked wait context, reclaimed on shutdown.
     wait_ctx: *mut WaitContext,
-    /// Receives the exit status once the process-handle wait fires.
-    exit_rx: Receiver<ExitStatus>,
+    /// Receives the exit status once the process-handle wait fires. Mutexed so
+    /// the containing type can be soundly `Sync` (`Receiver` itself is `!Sync`);
+    /// exit polling is still logically single-consumer by convention.
+    exit_rx: Mutex<Receiver<ExitStatus>>,
     /// Debounced resize coordinator (latest-geometry-wins).
     resize: ResizeCoalescer,
     /// Job object; dropping it kills the child tree (UC-03 E3).
@@ -157,12 +248,73 @@ pub struct ConPty {
 // on the reader thread which is joined during shutdown.
 unsafe impl Send for ConPty {}
 
+// SAFETY: the `&self` methods that are meaningful to call concurrently from
+// multiple threads are `write` (WriteFile on the input pipe — the OS
+// serializes individual `WriteFile` calls; interleaving whole calls from
+// different threads is memory-safe, just an application-level ordering
+// concern the caller owns) and `resize`/`applied_resizes*`/`set_on_applied`
+// (fully synchronized internally by `ResizeCoalescer`'s `Mutex`+`Condvar`).
+// `try_exit`/`wait_exit` take the `exit_rx` mutex (Receiver is `!Sync`, so we
+// never touch it concurrently); `wait_process_handle` only reads the process
+// HANDLE, which is valid for the lifetime of `self` and safe to wait on from
+// any thread. Exit polling remains logically single-consumer by convention.
+unsafe impl Sync for ConPty {}
+
 impl ConPty {
     /// Spawn `shell` inside a fresh pseudoconsole of `(cols, rows)`.
     ///
     /// `on_output` is invoked on the reader thread with each chunk of PTY output
     /// (raw VT bytes). Keep it cheap and non-blocking.
+    ///
+    /// Backward-compatible entry point (M0): builds a [`SpawnSpec`] from the
+    /// built-in shell's command line with an inherited environment, then
+    /// delegates to [`ConPty::spawn_spec`]. Prefer `spawn_spec` for
+    /// profile-driven launches (custom command/args/cwd/env).
     pub fn spawn<F>(shell: Shell, cols: i16, rows: i16, on_output: F) -> io::Result<Self>
+    where
+        F: FnMut(&[u8]) + Send + 'static,
+    {
+        // The built-in shells carry their flags in one command-line string
+        // (`pwsh.exe -NoLogo -NoProfile`). Preserve that exact command line by
+        // spawning it verbatim rather than re-quoting split args.
+        Self::spawn_command_line(&shell.command_line(), None, None, cols, rows, on_output)
+    }
+
+    /// Spawn from a [`SpawnSpec`] (M1 Task 11, UC-01 step 3): a resolved
+    /// command + args + cwd + sanitized env. This is the profile-driven path
+    /// `layout::Session` uses.
+    ///
+    /// The command line is assembled from `command` + `args` with per-arg
+    /// quoting; `env` (when non-empty) becomes the child's complete environment
+    /// via a `CREATE_UNICODE_ENVIRONMENT` block; `cwd` sets the child's working
+    /// directory. On spawn failure (E1) the pseudoconsole is closed and **no
+    /// reader thread is started** — the error is returned with nothing left
+    /// running.
+    pub fn spawn_spec<F>(spec: &SpawnSpec, cols: i16, rows: i16, on_output: F) -> io::Result<Self>
+    where
+        F: FnMut(&[u8]) + Send + 'static,
+    {
+        Self::spawn_command_line(
+            &spec.command_line(),
+            spec.cwd.as_deref(),
+            crate::env::encode_env_block(&spec.env),
+            cols,
+            rows,
+            on_output,
+        )
+    }
+
+    /// Core spawn: a fully-assembled command-line string, optional cwd, optional
+    /// pre-encoded env block. Both public entry points funnel here so the
+    /// pipe/job/waiter setup lives in exactly one place.
+    fn spawn_command_line<F>(
+        command_line: &str,
+        cwd: Option<&std::path::Path>,
+        env_block: Option<Vec<u16>>,
+        cols: i16,
+        rows: i16,
+        on_output: F,
+    ) -> io::Result<Self>
     where
         F: FnMut(&[u8]) + Send + 'static,
     {
@@ -188,14 +340,33 @@ impl ConPty {
         let (startup_info, attr_buf) = build_startup_info(hpcon)?;
 
         // --- Spawn the child SUSPENDED so we can job-assign before it runs. ---
-        let mut cmd: Vec<u16> = shell
-            .command_line()
+        let mut cmd: Vec<u16> = command_line
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
+        // Optional cwd as a NUL-terminated wide string.
+        let cwd_wide: Option<Vec<u16>> = cwd.map(|p| {
+            p.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        });
+        let cwd_ptr: PWSTR = match &cwd_wide {
+            Some(w) => w.as_ptr() as PWSTR,
+            None => std::ptr::null_mut(),
+        };
+        // Optional env block. `env_ptr` is null when inheriting.
+        let mut env_block = env_block;
+        let env_ptr: *const core::ffi::c_void = match &mut env_block {
+            Some(b) => b.as_ptr().cast(),
+            None => std::ptr::null(),
+        };
+
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: startup_info + cmd buffer are valid for the call; environment
-        // is inherited (null) with a unicode-environment flag set.
+        // SAFETY: startup_info + cmd buffer are valid for the call; the env
+        // block (when present) is a valid double-NUL-terminated UTF-16 block
+        // with the unicode-environment flag set; cwd_ptr is a valid NUL-
+        // terminated wide string or null (inherit).
         let ok = unsafe {
             CreateProcessW(
                 std::ptr::null(),
@@ -204,8 +375,8 @@ impl ConPty {
                 std::ptr::null(),
                 0, // do NOT inherit handles: the PTY attribute wires std handles
                 EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                std::ptr::null(),
-                std::ptr::null(),
+                env_ptr as *mut core::ffi::c_void,
+                cwd_ptr,
                 std::ptr::addr_of!(startup_info).cast(),
                 &mut pi,
             )
@@ -217,13 +388,16 @@ impl ConPty {
 
         if ok == 0 {
             let err = io::Error::last_os_error();
-            // SAFETY: hpcon valid; nothing reads the output pipe yet.
+            // SAFETY: hpcon valid; nothing reads the output pipe yet — E1's
+            // "no reader threads started" guarantee holds because we return
+            // before spawn_reader below.
             unsafe { ClosePseudoConsole(hpcon) };
             return Err(err);
         }
 
         let process = OwnedHandle(pi.hProcess);
         let thread = OwnedHandle(pi.hThread);
+        let child_pid = pi.dwProcessId;
 
         // --- Job object: assign the suspended child, THEN resume it. ---
         let job = JobObject::new()?;
@@ -272,11 +446,12 @@ impl ConPty {
             hpcon,
             process,
             thread,
+            child_pid,
             write_handle: input_write.into_raw(),
             reader,
             wait_handle,
             wait_ctx,
-            exit_rx,
+            exit_rx: Mutex::new(exit_rx),
             resize,
             _job: job,
             shut_down: false,
@@ -286,6 +461,32 @@ impl ConPty {
     /// Write raw bytes to the child's stdin (writer handle). Blocking.
     pub fn write(&self, data: &[u8]) -> io::Result<()> {
         write_all(self.write_handle, data)
+    }
+
+    /// The child process id. Stable for the process's lifetime. Used by the
+    /// lifecycle reliability test to verify (via `OpenProcess`) that the child
+    /// is truly gone after the session closes — the job-object kill-on-close
+    /// guarantee (UC-01 postcondition: no orphaned processes).
+    #[must_use]
+    pub fn child_pid(&self) -> u32 {
+        self.child_pid
+    }
+
+    /// Explicitly terminate the child process now (UC-01 `Session::kill`).
+    ///
+    /// Best-effort `TerminateProcess` on the child's process handle. The
+    /// kill-on-close job object still guarantees the whole tree is reaped when
+    /// this `ConPty` finally drops; `terminate` just makes the top-level child
+    /// die promptly without waiting for the drop, which the 100-cycle
+    /// reliability test relies on to keep each cycle short. Safe to call more
+    /// than once (a second call on an already-dead process is a harmless no-op).
+    pub fn terminate(&self) {
+        // SAFETY: valid process handle for the lifetime of `self`. Exit code
+        // 1 is conventional for an externally-terminated process; the waiter
+        // then surfaces it as a normal exit (E4).
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(self.process.0, 1);
+        }
     }
 
     /// Request a resize to `(cols, rows)`. Coalesced behind a ~50 ms debounce:
@@ -298,19 +499,43 @@ impl ConPty {
     /// Test-visible so the resize-storm test can assert the final geometry
     /// equals the last request (UC-03 E2).
     pub fn applied_resizes(&self) -> Vec<(i16, i16)> {
+        self.resize.applied().into_iter().map(|a| a.geom).collect()
+    }
+
+    /// Same as [`ConPty::applied_resizes`] but with a monotonic sequence number
+    /// and the `Instant` the `ResizePseudoConsole` call returned, so callers
+    /// (e.g. [`crate::resize::ResizePipeline`] and its tests) can assert
+    /// ordering against a second event stream (such as vt resizes) without a
+    /// race on wall-clock sampling. See SPEC §6.5.
+    pub fn applied_resizes_with_meta(&self) -> Vec<AppliedResize> {
         self.resize.applied()
+    }
+
+    /// Register a callback invoked on the coalescer's worker thread
+    /// synchronously *after* each `ResizePseudoConsole` call returns and
+    /// *before* the worker loops back to wait for the next request.
+    ///
+    /// This is the hook [`crate::resize::ResizePipeline`] uses to sequence the
+    /// vt resize strictly after the ConPTY resize, in the same single ordering
+    /// point, with no second timer (SPEC §6.5). Only one callback is supported
+    /// (last registration wins) — the pipeline is meant to be the sole owner.
+    pub fn set_on_applied<F>(&self, f: F)
+    where
+        F: Fn(AppliedResize) + Send + Sync + 'static,
+    {
+        self.resize.set_on_applied(f);
     }
 
     /// Non-blocking check for the exit status (populated by the process-handle
     /// waiter). Returns `Some` once the child has exited and been observed.
     pub fn try_exit(&self) -> Option<ExitStatus> {
-        self.exit_rx.try_recv().ok()
+        self.exit_rx.lock().unwrap().try_recv().ok()
     }
 
     /// Block until the child exits (or `timeout` elapses), returning the exit
     /// status surfaced by the process-handle waiter.
     pub fn wait_exit(&self, timeout: Duration) -> Option<ExitStatus> {
-        self.exit_rx.recv_timeout(timeout).ok()
+        self.exit_rx.lock().unwrap().recv_timeout(timeout).ok()
     }
 
     /// Wait on the raw process handle directly. Used by tests to measure the
@@ -384,18 +609,50 @@ impl Drop for ConPty {
 // Resize debounce / coalesce (~50 ms, latest-geometry-wins)
 // ---------------------------------------------------------------------------
 
+/// Debounce window for coalescing a storm of resize requests into a single
+/// `ResizePseudoConsole` call (SPEC §6.5, UC-03 E2). Kept short enough that
+/// interactive resizing (dragging a window edge) still feels immediate, but
+/// long enough to collapse a WM_SIZE storm (dozens of events/sec) into one
+/// applied geometry per quiet window.
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// One `ResizePseudoConsole` application, with ordering metadata.
+#[derive(Debug, Clone, Copy)]
+pub struct AppliedResize {
+    /// The geometry actually applied.
+    pub geom: (i16, i16),
+    /// Monotonically increasing across the lifetime of one [`ConPty`]. Lets a
+    /// consumer line this event up against a second sequence (e.g. vt
+    /// resizes) even if `Instant`s alone are too close to compare reliably.
+    pub seq: u64,
+    /// The instant `ResizePseudoConsole` returned for this application.
+    pub at: Instant,
+}
+
+type AppliedHook = Arc<dyn Fn(AppliedResize) + Send + Sync>;
 
 struct ResizeShared {
     pending: Option<(i16, i16)>,
-    applied: Vec<(i16, i16)>,
+    applied: Vec<AppliedResize>,
+    next_seq: u64,
     stop: bool,
     dirty_at: Option<Instant>,
+    on_applied: Option<AppliedHook>,
 }
 
 /// Coalesces a storm of `resize()` calls into a single `ResizePseudoConsole`
 /// per quiet window. A background thread polls the shared "latest request" and
 /// applies it once ~50 ms have passed with no newer request.
+///
+/// Under a sustained storm (a new request landing before every debounce
+/// window elapses), the worker's inner wait loop always re-reads
+/// `guard.dirty_at`/`guard.pending` fresh after being woken, so the *most
+/// recent* request at the moment the quiet window finally elapses is the one
+/// applied — never a stale snapshot taken before the last few requests came
+/// in. This was verified (not just assumed) against the storm test in
+/// `tests/resize_storm.rs`: with real recv-timeout wakeups there is no window
+/// where a newer `request()` can land after `pending.take()` but be silently
+/// dropped, because `request()` and the take both hold the same mutex.
 struct ResizeCoalescer {
     shared: Arc<(Mutex<ResizeShared>, std::sync::Condvar)>,
     worker: Option<JoinHandle<()>>,
@@ -413,8 +670,10 @@ impl ResizeCoalescer {
             Mutex::new(ResizeShared {
                 pending: None,
                 applied: Vec::new(),
+                next_seq: 0,
                 stop: false,
                 dirty_at: None,
+                on_applied: None,
             }),
             std::sync::Condvar::new(),
         ));
@@ -445,16 +704,31 @@ impl ResizeCoalescer {
                         }
                     }
                 }
-                // Quiet window elapsed: apply the latest geometry.
+                // Quiet window elapsed: apply the latest geometry. Re-reading
+                // `pending` here (rather than a value captured earlier) is
+                // what makes storm handling race-free — see the struct doc.
                 let geom = guard.pending.take();
                 guard.dirty_at = None;
                 if let Some((cols, rows)) = geom {
-                    guard.applied.push((cols, rows));
-                    drop(guard);
                     let size = COORD { X: cols, Y: rows };
                     // SAFETY: hpcon valid for the worker's lifetime; the owning
                     // ConPty stops this worker before ClosePseudoConsole.
                     unsafe { ResizePseudoConsole(hpcon.0, size) };
+                    // Record + notify *after* ResizePseudoConsole returns, so
+                    // any ordering hook observes ConPTY-before-vt (SPEC §6.5).
+                    let seq = guard.next_seq;
+                    guard.next_seq += 1;
+                    let applied = AppliedResize {
+                        geom: (cols, rows),
+                        seq,
+                        at: Instant::now(),
+                    };
+                    guard.applied.push(applied);
+                    let hook = guard.on_applied.clone();
+                    drop(guard);
+                    if let Some(hook) = hook {
+                        hook(applied);
+                    }
                 }
             }
         });
@@ -472,9 +746,17 @@ impl ResizeCoalescer {
         cvar.notify_all();
     }
 
-    fn applied(&self) -> Vec<(i16, i16)> {
+    fn applied(&self) -> Vec<AppliedResize> {
         let (lock, _) = &*self.shared;
         lock.lock().unwrap().applied.clone()
+    }
+
+    fn set_on_applied<F>(&self, f: F)
+    where
+        F: Fn(AppliedResize) + Send + Sync + 'static,
+    {
+        let (lock, _) = &*self.shared;
+        lock.lock().unwrap().on_applied = Some(Arc::new(f));
     }
 
     fn stop(&mut self) {

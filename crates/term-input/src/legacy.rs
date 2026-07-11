@@ -10,13 +10,28 @@
 
 use crate::{Key, KeyEvent, Modifiers};
 
-/// Application-cursor-keys / application-keypad mode toggle. Kitty flags
-/// are reserved for M1 and intentionally not modeled here yet.
+/// Application-cursor-keys / application-keypad mode toggle plus the active
+/// Kitty keyboard-protocol progressive-enhancement flags.
+///
+/// `Mode` is constructed by the shell from the vt's reported state. All
+/// fields default to the legacy behavior (`kitty_flags == 0` → pure legacy
+/// xterm), so `Mode::default()` and struct-update (`..Default::default()`)
+/// construction stay valid as fields are added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Mode {
     /// DECCKM: when set, arrow keys (and Home/End) encode via SS3 (`ESC
     /// O <letter>`) instead of CSI (`ESC [ <letter>`) when unmodified.
+    ///
+    /// Only consulted on the legacy path — when `kitty_flags != 0` the Kitty
+    /// encoder uses the unambiguous `CSI 1;<m><letter>` forms regardless of
+    /// this bit.
     pub application_cursor_keys: bool,
+    /// Kitty keyboard-protocol progressive-enhancement flags, as reported by
+    /// `term_core::Terminal::kitty_flags()`. `0` means the application has
+    /// not enabled the protocol → pure legacy encoding. Bit meanings live in
+    /// [`crate::kitty`] (`DISAMBIGUATE`, `REPORT_EVENTS`, `REPORT_ALTERNATE`,
+    /// `REPORT_ALL_KEYS`, `REPORT_TEXT`).
+    pub kitty_flags: u8,
 }
 
 /// Classic xterm modifier parameter: `1 + shift(1) + alt(2) + ctrl(4)`.
@@ -223,6 +238,7 @@ mod tests {
         let normal = Mode::default();
         let app = Mode {
             application_cursor_keys: true,
+            ..Default::default()
         };
         let event = KeyEvent::new(Key::Up, Modifiers::NONE);
 
@@ -234,6 +250,7 @@ mod tests {
     fn application_cursor_keys_does_not_affect_modified_arrows() {
         let app = Mode {
             application_cursor_keys: true,
+            ..Default::default()
         };
         let event = KeyEvent::new(Key::Up, Modifiers::SHIFT);
         // Modified arrows always use the CSI 1;<param> form, even in

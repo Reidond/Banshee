@@ -14,12 +14,24 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_DirectComposition",
+    "Win32_Graphics_DirectWrite",
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
+# Direct dependency so the `#[implement]` macro's `::windows_core::` paths resolve
+# (the macro emits absolute paths to windows-core, which the umbrella crate only
+# re-exports as `windows::core`). Same pinned git rev as the workspace patch.
+windows-core = "0.62"
+# Pure-Rust HarfBuzz shaping port (the design's "HarfBuzz shaping"; no C toolchain
+# on MSVC). ttf-parser reads the raw sfnt tables we extract from DirectWrite font
+# faces; rustybuzz shapes runs over those Faces.
+rustybuzz = "0.20"
+ttf-parser = "0.25"
+# GridSnapshot is the render input; the snapshot->frame boundary lives in text.rs.
+term-core = { path = "../term-core" }
 
 [[example]]
 name = "grid_spike"

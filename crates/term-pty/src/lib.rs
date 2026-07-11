@@ -7,6 +7,11 @@
 #[cfg(windows)]
 mod job;
 
+pub mod env;
+
+#[cfg(windows)]
+pub mod exit;
+
 #[cfg(windows)]
 pub mod conpty;
 
@@ -14,4 +19,21 @@ pub mod conpty;
 pub mod procwalk;
 
 #[cfg(windows)]
-pub use conpty::{ConPty, ExitStatus, Shell};
+pub mod resize;
+
+#[cfg(windows)]
+pub mod paste_write;
+
+pub mod wsl;
+
+#[cfg(windows)]
+pub use conpty::{AppliedResize, ConPty, ExitStatus, Shell, SpawnSpec};
+
+#[cfg(windows)]
+pub use exit::{ExitCause, ExitReport};
+
+#[cfg(windows)]
+pub use resize::ResizePipeline;
+
+#[cfg(windows)]
+pub use paste_write::write_paste;

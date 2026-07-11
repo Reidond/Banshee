@@ -14,12 +14,32 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Install Windows App SDK runtime (2.0)
+        # app-shell is a framework-dependent WinUI3 app: without the runtime,
+        # windows_reactor::bootstrap() (built with OnNoMatch_ShowUI) pops a
+        # modal install dialog and the process hangs forever — which is how
+        # the first PR run of the e2e smoke timed out with no output. The
+        # runner image does not ship the runtime; install it silently.
+        run: |
+          Invoke-WebRequest -Uri "https://aka.ms/windowsappsdk/2.0/latest/windowsappruntimeinstall-x64.exe" -OutFile "$env:TEMP\wasdk-install.exe"
+          Start-Process -FilePath "$env:TEMP\wasdk-install.exe" -ArgumentList "--quiet","--force" -Wait -NoNewWindow
+          Get-AppxPackage -Name 'Microsoft.WindowsAppRuntime*' | Select-Object Name, Version
       - name: cargo fmt --check
         run: cargo fmt --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      - name: e2e smoke (app-shell --echo-selftest)
+        # Task 13: real app-shell.exe, launch -> type in pwsh -> assert grid
+        # text -> close, headless-friendly (no UIA). Already covered by the
+        # `cargo test --workspace` run above via crates/app-shell/tests/
+        # e2e_smoke.rs (smoke_echo_selftest); this explicit step keeps the
+        # smoke gate separately named/visible in the CI job list. The Mode-2
+        # UIA-driven test (smoke_uia_real_window) is #[ignore]d and NOT run in
+        # CI — it needs a real interactive desktop session for reliable
+        # PostMessageW delivery, which is undesirable to depend on for PR gating.
+        run: cargo test -p app-shell --test e2e_smoke -- --skip smoke_uia_real_window
 
   arm64-build:
     name: build (arm64)

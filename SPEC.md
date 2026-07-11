@@ -400,8 +400,8 @@ Estimates assume one experienced full-stack dev at strong focus plus review help
 
 **Open questions**
 1. Final name + icon direction (current mood: something in the banshee/wraith register).
-2. Render sync: brief read-lock vs double-buffered snapshot — decide on M1 profiling data, not taste.
-3. One D3D device per window vs shared device + per-window contexts (ARM64 hybrid-GPU behavior?).
+2. ~~Render sync: brief read-lock vs double-buffered snapshot — decide on M1 profiling data, not taste.~~ **DECIDED (M1, 2026-07-04): brief read-lock (variant A).** Flood benchmark (`term-core/tests/flood_sync.rs`, 120×40, 10 s saturating flood, 160 Hz consumer): consumer lock+`render_state_update` p99 0.24–0.31 ms, max ≤ 2.0 ms vs 8 ms UI-stall budget; writer feed stall p99 0.017 ms. `SharedTerminal::with_render_update` isolates the choice — variant B stays a drop-in if a future workload regresses.
+3. One D3D device per window vs shared device + per-window contexts (ARM64 hybrid-GPU behavior?). **M1 default recorded: one device per window** (matches §5.1 render-thread-per-window); revisit only if M4 ARM64 hybrid-GPU testing surfaces problems.
 4. How far to lean into Ghostty config-name compatibility — convenience vs implied promises.
 5. Agent pane scope: per-window (one agent, many tabs) vs per-tab sessions — leaning per-window with session-per-root, needs UX validation in M3.
 6. Could inline AI be *implemented as* a one-shot ACP session against a bundled tiny agent, deleting the bespoke provider layer? Attractive simplification; evaluate in M3.

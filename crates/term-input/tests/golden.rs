@@ -85,6 +85,7 @@ fn parse_mode(spec: &str) -> Mode {
         "normal" => Mode::default(),
         "appcursor" => Mode {
             application_cursor_keys: true,
+            ..Default::default()
         },
         other => panic!("unknown mode spec: {other}"),
     }
