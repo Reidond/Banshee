@@ -201,7 +201,7 @@ T2 text pipeline ────┴─ T4 resize e2e   T6 mouse+paste              
 - **Depends on**: Tasks 12, 13
 - **Files to modify**: exit report in `.specs/m1-first-wail/`; defect fixes as triaged; Deviations Log
 - **Acceptance criteria**:
-  - [~] SPEC §10 table run (release, methodology in [exit-report.md](exit-report.md)): stall PASS (0.122 ms p99), loop-side latency PASS (0.52 ms; PresentMon pending), cold start INCONCLUSIVE (instrumentation), **memory FAIL as measured (109 MB vs ~80 MB → D-M1-1)**, vtebench = operator item
+  - [~] SPEC §10 table run (release, methodology in [exit-report.md](exit-report.md)): stall PASS (0.122 ms p99), latency PASS app-side (0.52 ms loop + sub-ms PresentMon pipeline; Composed:Flip caps photon attribution), **cold start FAIL (748 ms median first-content-present vs 500 ms — now properly instrumented)**, **memory FAIL → SPEC-LEVEL FINDING (WinUI3 session-free baseline alone is 119 MB vs the whole ~80 MB budget; terminal increments are modest: +8.4 MB session, +10.7 MB filled scrollback)**, vtebench Banshee baseline recorded (harness + numbers in perf/), winghostty ratio = operator
   - [ ] Author self-hosts full workdays — OPERATOR (the real exit criterion)
   - [ ] M2 spec re-baseline — deliberately deferred until after self-hosting (see exit report §checklist item 8)
 - **Test requirements**: perf runs archived; exit review = Full quality gate

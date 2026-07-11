@@ -6,32 +6,55 @@
 > task's definition of done was independently re-verified by the orchestrator
 > before merge (tests re-run, diffs read, claims checked).
 
-## SPEC §10 perf table — measured today (release builds, dev machine ≈ reference machine, ~160 Hz display)
+## SPEC §10 perf table — measured through 2026-07-11 (release builds, dev machine ≈ reference machine, ~160 Hz display)
 
 | Gate | Target | Measured | Verdict |
 |---|---|---|---|
 | Keypress → present | ≤ 15 ms p99 @ 120 Hz | loop-side avg 0.52 ms / p95 0.52 ms (echo-selftest, release). PresentMon (elevated, real typing, 26 presents): MsInPresentAPI p99 0.39 ms, render→present-latency p99 0.45 ms, GPU 0.27 ms — app-side pipeline is sub-ms end to end. **Photon attribution NA: `PresentMode = Composed: Flip`** (XAML/SwapChainPanel composition) — DWM owns the final flip, PresentMon can't attribute screen time to our swapchain. Compositor adds ~1–2 vsyncs inherently (6.3–12.6 ms @ 160 Hz; 8.3–16.7 ms @ the SPEC's 120 Hz). | App-side PASS with huge margin; **end-to-end estimate ≈ 7–13 ms @ 160 Hz (within gate), marginal at 120 Hz worst-case** — the compositor hop, not our code, is the budget item. See open question below. |
 | UI-thread stall under flood | < 8 ms | consumer lock+update p99 **0.122 ms**, max 3.42 ms (release `flood_sync`, saturating 10 s flood) | **PASS** (65× headroom) |
-| vtebench vs winghostty | ≤ 1.5× wall-time | vtebench/winghostty **not installed** on this machine | OPERATOR item |
-| Cold start → interactive prompt | ≤ 500 ms | 1.26–1.34 s wall to visible bare-pwsh prompt, **but instrumentation granularity is ~1 s** (grid-dump cadence); true value in 0.3–1.3 s | **INCONCLUSIVE — needs finer instrumentation** (add a first-prompt-present probe timestamp; then PresentMon run) |
-| Idle session memory @ 10k scrollback | ≤ ~80 MB | **108–109 MB private** (release, idle pwsh, 10 s settle; WS ~102 MB) | **FAIL as measured** — triage below |
+| vtebench vs winghostty | ≤ 1.5× wall-time | Harness ready; Banshee release medians recorded (3 warm runs): scrolling **1,240.32 ms**, dense-cells **1,004.53 ms**, unicode **950.82 ms**. 9/9 runs completed with marker + rendered-death-banner proof. See `perf/vtebench-banshee-2026-07-05.md`. | **Banshee baseline DONE; winghostty comparison = OPERATOR** (not installed on this machine). |
+| Cold start → interactive prompt | ≤ 500 ms | First successful dirty `Present` carrying non-empty bare-pwsh content, 5 release runs: **704 ms min / 748 ms median** (runs: 895, 757, 744, 704, 748 ms). Prompt-bearing grid externally observed at 1.462 s min / 1.495 s median; that secondary hook is conservative because dumps are throttled to ~1/s. | **FAIL** — even first content present is 204 ms over the gate at best. |
+| Idle session memory @ 10k scrollback | ≤ ~80 MB | 3-run release medians after 10 s idle: session-free WinUI3+D3D **119.30 MB private / 119.52 MB WS**; bare pwsh **127.72 / 125.92 MB**; after 15k lines (default scrollback capped at ≈10.9k lines) **138.44 / 136.58 MB**. | **FAIL / SPEC-LEVEL FINDING** — framework baseline alone exceeds the whole budget by 39.30 MB. |
 | New-tab p99 | (M2 gate) | N/A — no tabs in M1 | N/A |
 
 **Methodology:** all release builds; `--echo-selftest` for loop-side latency
 (keystroke→encoder→ConPTY→pwsh→vt→CellRenderer→present); `flood_sync` bench for
-stall; cold start via `BANSHEE_DEBUG_DUMP_GRID` polling (3 runs each config);
-memory via `Get-Process` PrivateMemorySize64 after 10 s idle. Display is 160 Hz
+stall; cold start via the app-side first-content-present probe (5 runs) plus
+`BANSHEE_DEBUG_DUMP_GRID` prompt polling; memory via `Get-Process`
+PrivateMemorySize64/WorkingSet64 (3 runs per state, 10 s idle after readiness).
+vtebench uses `scripts/vtebench.ps1` (3 warm runs/scenario, host stopwatch,
+completion marker plus rendered session-death confirmation, 120 s timeout/run).
+Display is 160 Hz
 (not the SPEC-assumed 120 Hz) — present cadence ≈ 6.26 ms confirms.
 
-### Memory-gate triage (108 MB vs ~80 MB)
-Not yet root-caused. Known contributors: WinUI3/XAML + windows-reactor stack,
-D3D11 device + swapchain, DirectWrite font caches + R8 atlas (2048² = 4 MB),
-12 MB vt scrollback budget. Actions for the hardening pass: heap snapshot
-(VMMap/heaptrack-equivalent), check atlas grow policy, check double-buffered
-snapshot copies, measure a `--self-test` (no session) baseline to split
-framework-vs-terminal cost. Tracked as M1 defect **D-M1-1** (blocking-severity
-decision deferred to self-hosting; the SPEC target says "~80 MB", tilde
-acknowledged).
+### Memory-gate triage — D-M1-1 (138.44 MB filled vs ~80 MB)
+
+Release measurements on 2026-07-11 (MB are MiB, three runs each):
+`BANSHEE_SELF_TEST_SECS=20` kept the otherwise five-second session-free
+self-test alive for its 10-second sample; the default remains five seconds.
+
+| State after readiness + 10 s idle | Private MB runs (median) | WS MB runs (median) | Incremental private |
+|---|---:|---:|---:|
+| `--self-test` (session-free WinUI3 + D3D baseline) | 119.47, 119.30, 119.04 (**119.30**) | 119.64, 119.52, 119.33 (**119.52**) | framework baseline |
+| Bare `pwsh.exe -NoLogo -NoProfile` | 127.49, 127.90, 127.72 (**127.72**) | 125.88, 125.92, 126.12 (**125.92**) | **+8.42 MB** session/VT |
+| Same session after `1..15000` output, then 10 s settle | 138.44, 138.16, 139.04 (**138.44**) | 136.73, 136.31, 136.58 (**136.58**) | **+10.72 MB** scrollback fill |
+
+Attribution: the largest contributor is the framework/hosting baseline, not
+terminal data. Beyond that baseline the largest measured increment is filled
+scrollback, and its +10.72 MB closely tracks the configured 12 MB libghostty-vt
+byte budget. `GridSnapshot` retains/reuses only visible row cell buffers, so it
+does not grow with scrollback. The R8 glyph atlas starts at 512² (0.25 MB) and
+only grows on demand to its 2048² cap (4 MB); the ASCII fill does not justify
+changing that policy. No memory optimization was applied: shrinking the already
+small initial atlas cannot close a 58.44 MB total gap, while reducing scrollback
+would trade away the specified retention and changing the WinUI3 host is not a
+trivially safe M1 hardening edit.
+
+**Verdict/spec finding:** ~80 MB process-private is unattainable with the
+current framework because the session-free baseline is already 119.30 MB.
+Re-scope the NFR (for example, budget terminal incremental memory separately)
+or revisit the hosting framework in a later architecture milestone; do not
+represent terminal-cache eviction as a fix for a framework-baseline overage.
 
 ## Automated live-input matrix (added 2026-07-04, post-code-complete)
 `crates/app-shell/tests/live_input_matrix.rs` (runner: `scripts/live-matrix.ps1`)
@@ -90,13 +113,15 @@ opts in) — found because the cold-start gate landed in a bash prompt.
    PSReadLine interaction). The author's UA layout is the acceptance environment.
 2. **PresentMon** end-to-end keypress→present capture (install PresentMon; run
    against the release build; correlate with the loop-side 0.52 ms number).
-3. **Cold-start instrumentation fix + rerun** (needs a first-content-present
-   probe; current best estimate 0.3–1.3 s vs 500 ms gate).
-4. **vtebench vs winghostty** on this machine, release builds, same scenarios;
-   record methodology + ratio.
+3. **DONE 2026-07-11 — Cold-start instrumentation + rerun:** 704 ms min /
+   748 ms median first-content present; **FAIL** vs 500 ms.
+4. **PARTIAL 2026-07-11 — vtebench vs winghostty:** focus-free harness and
+   Banshee three-scenario medians recorded; winghostty ratio remains operator
+   work because winghostty is not installed. See `docs/vtebench.md`.
 5. **24 h soak** — `scripts/soak.ps1` (validated harness; WSL `top -b` busy pane;
    OLS slope verdict, threshold 500 KB/h).
-6. **D-M1-1 memory triage** (108 MB vs ~80 MB target).
+6. **DONE 2026-07-11 — D-M1-1 memory triage:** framework baseline 119.30 MB
+   private; filled terminal 138.44 MB; **FAIL/spec-level NFR re-scope needed**.
 7. **Author self-hosts full workdays** — the real exit criterion. Defects triaged
    against the P0 table; non-blockers → M2 backlog.
 8. After 1–7: **re-baseline the M2 spec** (`.specs/m2-chorus`, promote to full

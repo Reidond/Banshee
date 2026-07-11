@@ -61,6 +61,16 @@ use windows_reactor::{
 /// How long `--self-test` runs before force-exiting with a summary.
 const SELF_TEST_SECS: u64 = 5;
 
+/// Measurement-only override for sampling the session-free framework baseline
+/// after the default five-second self-test would already have exited.
+fn self_test_secs() -> u64 {
+    std::env::var("BANSHEE_SELF_TEST_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&secs| secs > 0)
+        .unwrap_or(SELF_TEST_SECS)
+}
+
 /// Fallback font em size (device px) when config has not been applied yet.
 /// Matches the term-render WARP text test so cell metrics are consistent with
 /// proven-good geometry.
@@ -190,6 +200,34 @@ fn mode() -> Mode {
 }
 
 // ───────────────────────── logging ─────────────────────────
+
+/// Process-entry timestamp for cold-start measurement. `main` initializes this
+/// before mode detection or any bootstrap work.
+static PROCESS_STARTED: OnceLock<Instant> = OnceLock::new();
+
+/// Set after the first successful present carrying non-empty session content.
+/// Once set, the render-loop cost is only the fast `OnceLock::get` check.
+static FIRST_CONTENT_PRESENTED: OnceLock<()> = OnceLock::new();
+
+fn record_first_content_present(snapshot: &GridSnapshot) {
+    if FIRST_CONTENT_PRESENTED.get().is_some()
+        || !snapshot
+            .rows_data
+            .iter()
+            .any(|row| row.cells.iter().any(|cell| cell.codepoint != 0))
+    {
+        return;
+    }
+
+    if FIRST_CONTENT_PRESENTED.set(()).is_ok() {
+        let elapsed = PROCESS_STARTED
+            .get()
+            .expect("process start initialized at main entry")
+            .elapsed()
+            .as_millis();
+        eprintln!("[PROBE COLDSTART] first_content_present_ms={elapsed}");
+    }
+}
 
 /// Milliseconds since the process started — a stable, grep-friendly timestamp
 /// for the manual input matrix.
@@ -561,6 +599,8 @@ impl D3DState {
                                 let hr = self.swap_chain.Present(1, DXGI_PRESENT(0));
                                 if hr.is_err() {
                                     probe("HOST", &format!("Present failed: {:?}", hr));
+                                } else {
+                                    record_first_content_present(&session.snap);
                                 }
                                 presented = true;
                             }
@@ -1776,7 +1816,7 @@ fn publish_stats(stats: &FrameStats) {
 /// message pump can't prevent the deterministic exit CI relies on.
 fn spawn_self_test_watchdog() {
     std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_secs(SELF_TEST_SECS));
+        std::thread::sleep(Duration::from_secs(self_test_secs()));
         let panel = PANEL_MOUNTED.load(Ordering::SeqCst);
         let frames = FRAMES_PRESENTED.load(Ordering::SeqCst);
         let avg_ms = AVG_FRAME_US.load(Ordering::SeqCst) as f64 / 1000.0;
@@ -1895,6 +1935,7 @@ fn app(cx: &mut RenderCx) -> Element {
 // ───────────────────────── entry point ─────────────────────────
 
 fn main() -> Result<()> {
+    let _ = PROCESS_STARTED.set(Instant::now());
     eprintln!(
         "[BANSHEE-M1] Phase 1 shell starting (mode={}). Reactor rev pinned in Cargo.toml.",
         match mode() {
